@@ -60,8 +60,7 @@ function drawHpBar(x, y, hp, maxHp, color = "#ff2e63") {
   ctx.fillStyle = color;     ctx.fillRect(bx, by, (bw * hp) / maxHp, bh);
 }
 
-// Speed multiplier — all speeds get a global boost
-const SPEED_MULT = 1.35;
+const SPEED_MULT = 1.7;
 
 // ===================== PROJECTILES =====================
 class Bullet {
@@ -72,8 +71,18 @@ class Bullet {
     this.radius = radius;
     this.color = color; this.piercing = piercing;
     this.active = true;
+    this.lockOnTarget = null;
+    this.damageMult = 1;
+    this.fromHelper = false;
   }
   update() {
+    if (this.lockOnTarget && this.lockOnTarget.isAlive) {
+      const d = Math.hypot(this.lockOnTarget.x - this.x, this.lockOnTarget.y - this.y);
+      if (d < 140) {
+        const ang = Math.atan2(this.lockOnTarget.y - this.y, this.lockOnTarget.x - this.x);
+        this.dx = Math.cos(ang); this.dy = Math.sin(ang);
+      }
+    }
     this.x += this.dx * this.speed; this.y += this.dy * this.speed;
     if (this.x < -20 || this.x > W + 20 || this.y < -20 || this.y > H + 20) this.active = false;
   }
@@ -90,62 +99,57 @@ class StrongBullet {
     this.speed = 17 * SPEED_MULT;
     this.radius = 14;
     this.active = true;
+    this.lockOnTarget = null;
+    this.damageMult = 1;
+    this.fromHelper = false;
+    this.piercing = true;
   }
   update() {
+    if (this.lockOnTarget && this.lockOnTarget.isAlive) {
+      const d = Math.hypot(this.lockOnTarget.x - this.x, this.lockOnTarget.y - this.y);
+      if (d < 140) {
+        const ang = Math.atan2(this.lockOnTarget.y - this.y, this.lockOnTarget.x - this.x);
+        this.dx = Math.cos(ang); this.dy = Math.sin(ang);
+      }
+    }
     this.x += this.dx * this.speed; this.y += this.dy * this.speed;
     if (this.x < -30 || this.x > W + 30 || this.y < -30 || this.y > H + 30) this.active = false;
   }
   draw() {
     const r = this.radius;
     ctx.beginPath(); ctx.arc(this.x, this.y, r, 0, Math.PI * 2);
-    ctx.fillStyle = "#ff2e63"; ctx.fill();
+    ctx.fillStyle = this.fromHelper ? "#bbbbbb" : "#ff2e63"; ctx.fill();
     ctx.beginPath(); ctx.arc(this.x, this.y, r / 2, 0, Math.PI * 2);
     ctx.fillStyle = "#ffffff"; ctx.fill();
   }
 }
 
 /*
-  Rocket:
-  - Shape: tiny orange triangle.
-  - Homes for 7 seconds only, then explodes (inactive).
-  - Fast when flying straight — but turning is SLOW (max turn rate per tick).
-  - Also explodes on touching an edge.
+  Rocket: dark blue triangle, travels STRAIGHT to red's LOCKED position
+  at fire time (no homing). Explodes on 2s or on edge.
 */
 class Rocket {
-  constructor(x, y, target, speed = 5.5, color = "#ff9f43") {
+  constructor(x, y, target, speed = 6.5, color = "#1a3a8a", fromHelper = false) {
     this.x = x; this.y = y;
     this.radius = 7; this.size = 8;
     this.speed = speed * SPEED_MULT;
     this.color = color;
     this.spawnTime = now();
-    this.homingDuration = 7.0;
-    this.maxTurnRate = 0.045;  // radians per tick — slow turning
-    this.target = target;
+    this.lifetime = 2.5;
     this.active = true;
+    // Lock in red's CURRENT position — no tracking after this
     this.angle = target ? Math.atan2(target.y - y, target.x - x) : 0;
+    this.damage = 1;
+    this.fromHelper = fromHelper;
   }
   update() {
     const elapsed = now() - this.spawnTime;
-    if (elapsed > this.homingDuration) { this.active = false; return; }
-
-    if (this.target && this.target.isAlive) {
-      const desired = Math.atan2(this.target.y - this.y, this.target.x - this.x);
-      let diff = desired - this.angle;
-      while (diff >  Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      const turn = Math.max(-this.maxTurnRate, Math.min(this.maxTurnRate, diff));
-      this.angle += turn;
-    }
-
+    if (elapsed > this.lifetime) { this.active = false; return; }
     this.x += Math.cos(this.angle) * this.speed;
     this.y += Math.sin(this.angle) * this.speed;
-
-    // Explode on edges
     if (this.x < 5 || this.x > W - 5 || this.y < 5 || this.y > H - 5) this.active = false;
   }
-  draw() {
-    drawTri(this.x, this.y, this.size, this.angle, this.color);
-  }
+  draw() { drawTri(this.x, this.y, this.size, this.angle, this.color); }
 }
 
 // ===================== PLAYER =====================
@@ -157,51 +161,86 @@ class PlayerRed {
     this.angle = 0;
     this.maxHp = hp; this.hp = hp;
     this.isAlive = true;
-    this.score = 0;      // "marks" currency
+    this.score = 0;
+    this.kills = 0;
     this.strongBulletCd = 20; this.lastStrongBulletTime = -20;
     this.rocketCd = 3;        this.lastRocketTime = -3;
     this.dashCd = 4;          this.lastDashTime = -4;
     this.dashEndTime = 0;
 
-    // Shield skill
-    this.hasShieldSkill = false;
+    this.equipped = [];
+
     this.shieldHp = 0;
     this.shieldMax = 10;
     this.shieldCd = 30;
     this.shieldLastUsed = -30;
 
-    // Strike skill
-    this.hasStrikeSkill = false;
-    this.strikePending = false;   // armed: will charge on next right-joystick release
+    this.strikePending = false;
     this.isStriking = false;
     this.strikeDir = [1, 0];
-    this.strikeTrail = [];        // white shadows
+    this.strikeTrail = [];
     this.strikeCd = 15;
     this.strikeLastUsed = -15;
+
+    this.lockonActive = false;
+    this.lockonSelecting = false;
+    this.lockonPath = [];
+    this.lockonCircles = [];
+    this.lockonLocked = new Set();
+    this.lockonCd = 25;
+    this.lockonLastUsed = -25;
+
+    this.fakeActive = false;
+    this.fakeStart = 0;
+    this.fakeDuration = 10;
+    this.fakeCd = 20;
+    this.fakeLastUsed = -20;
+    this.fakeAbsorbed = 0;
+    this.fakeOrbsAngle = 0;
+    this.fakeMode = "follow";
+
+    this.helpActive = false;
+    this.helpStart = 0;
+    this.helpDuration = 12;
+    this.helpCd = 30;
+    this.helpLastUsed = -30;
+    this.helpers = [];
+
+    this.damageTakenThisLife = 0;
   }
+
+  hasSkill(key) { return this.equipped.includes(key); }
+
   triggerDash() {
     const t = now();
     if (t - this.lastDashTime >= this.dashCd) {
-      this.lastDashTime = t;
-      this.dashEndTime = t + 0.18;
+      this.lastDashTime = t; this.dashEndTime = t + 0.18;
     }
   }
+
   fireStrongBullet(enemies) {
     const t = now();
     if (t - this.lastStrongBulletTime >= this.strongBulletCd) {
-      // Aim at nearest enemy
+      this.lastStrongBulletTime = t;
+      const sb = new StrongBullet(this.x, this.y, this.angle);
+      const locked = this.getLockonTargets();
+      const pool = locked.length ? locked : enemies;
       let best = null, bestD = Infinity;
-      for (const e of enemies) {
+      for (const e of pool) {
         if (!e.isAlive) continue;
         const d = Math.hypot(e.x - this.x, e.y - this.y);
         if (d < bestD) { bestD = d; best = e; }
       }
-      const angle = best ? Math.atan2(best.y - this.y, best.x - this.x) : this.angle;
-      this.lastStrongBulletTime = t;
-      return new StrongBullet(this.x, this.y, angle);
+      if (best) {
+        sb.angle = Math.atan2(best.y - this.y, best.x - this.x);
+        sb.dx = Math.cos(sb.angle); sb.dy = Math.sin(sb.angle);
+        if (locked.includes(best)) { sb.lockOnTarget = best; sb.damageMult = 1.5; }
+      }
+      return sb;
     }
     return null;
   }
+
   fireRockets(enemies) {
     const t = now();
     if (t - this.lastRocketTime >= this.rocketCd) {
@@ -209,31 +248,28 @@ class PlayerRed {
       if (!alive.length) return [];
       this.lastRocketTime = t;
       const rockets = [];
-      // 5 rockets per salvo
       for (let i = 0; i < 5; i++) {
         const target = alive[i % alive.length];
         const spread = (i - 2) * 0.35;
         const off = this.angle + spread;
-        rockets.push(new Rocket(
-          this.x + Math.cos(off) * 14,
-          this.y + Math.sin(off) * 14,
-          target, 5.5, "#ff9f43"
-        ));
+        rockets.push(new Rocket(this.x + Math.cos(off) * 14, this.y + Math.sin(off) * 14,
+                                target, 5.5, "#1a3a8a", false));
       }
       return rockets;
     }
     return [];
   }
+
   activateShield() {
     const t = now();
-    if (!this.hasShieldSkill) return;
+    if (!this.hasSkill("shield")) return;
     if (this.shieldHp > 0) return;
     if (t - this.shieldLastUsed < this.shieldCd) return;
     this.shieldHp = this.shieldMax;
   }
   tryArmStrike() {
     const t = now();
-    if (!this.hasStrikeSkill) return;
+    if (!this.hasSkill("strike")) return;
     if (this.isStriking) return;
     if (t - this.strikeLastUsed < this.strikeCd) return;
     this.strikePending = true;
@@ -245,59 +281,259 @@ class PlayerRed {
     this.strikeLastUsed = now();
     this.strikeTrail = [];
   }
+  activateLockon() {
+    const t = now();
+    if (!this.hasSkill("lockon")) return;
+    if (t - this.lockonLastUsed < this.lockonCd) return;
+    this.lockonSelecting = true;
+    this.lockonActive = false;
+  }
+  commitLockon() {
+    this.lockonLastUsed = now();
+    this.lockonSelecting = false;
+    this.lockonActive = true;
+    const expire = now() + 2;
+    for (const c of this.lockonPath) {
+      this.lockonCircles.push({ x: c.x, y: c.y, r: c.r, expire });
+      for (const e of game.enemies) {
+        if (e.isAlive && Math.hypot(e.x - c.x, e.y - c.y) < c.r + e.radius) {
+          this.lockonLocked.add(e);
+        }
+      }
+    }
+    this.lockonPath = [];
+  }
+  updateLockon() {
+    const t = now();
+    this.lockonCircles = this.lockonCircles.filter(c => c.expire > t);
+    for (const e of [...this.lockonLocked]) {
+      if (!e.isAlive) this.lockonLocked.delete(e);
+    }
+  }
+  getLockonTargets() {
+    if (!this.lockonActive) return [];
+    const alive = [];
+    for (const e of this.lockonLocked) if (e.isAlive) alive.push(e);
+    return alive;
+  }
+  activateFake() {
+    const t = now();
+    if (!this.hasSkill("fake")) return;
+    if (this.fakeActive) return;
+    if (t - this.fakeLastUsed < this.fakeCd) return;
+    this.fakeActive = true;
+    this.fakeStart = t;
+    this.fakeAbsorbed = 0;
+    this.fakeMode = Math.random() < 0.5 ? "follow" : "attack";
+    this.damageTakenThisLife = 0;
+  }
+  activateHelp() {
+    const t = now();
+    if (!this.hasSkill("help")) return;
+    if (this.helpActive) return;
+    if (t - this.helpLastUsed < this.helpCd) return;
+    this.helpActive = true;
+    this.helpStart = t;
+    this.helpers = [];
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2;
+      const hx = this.x + Math.cos(a) * 60;
+      const hy = this.y + Math.sin(a) * 60;
+      this.helpers.push(new Helper(hx, hy, [...this.equipped]));
+    }
+  }
+
   move(dx, dy, aimAngle) {
     if (!this.isAlive) return;
-    if (this.isStriking) return; // movement handled by strike
+    if (this.isStriking) return;
     const speed = this.baseSpeed * (now() < this.dashEndTime ? 2.6 : 1.0);
     this.x = Math.max(this.radius, Math.min(W - this.radius, this.x + dx * speed));
     this.y = Math.max(this.radius, Math.min(H - this.radius, this.y + dy * speed));
     this.angle = aimAngle;
   }
+
   updateStrike() {
     if (!this.isStriking) return;
     const speed = 22 * SPEED_MULT;
     this.angle = Math.atan2(this.strikeDir[1], this.strikeDir[0]);
-    this.strikeTrail.push({ x: this.x, y: this.y, a: this.angle, life: 0.25 });
     this.x += this.strikeDir[0] * speed;
     this.y += this.strikeDir[1] * speed;
     if (this.x < this.radius || this.x > W - this.radius ||
         this.y < this.radius || this.y > H - this.radius) {
-      // clamp and stop
       this.x = Math.max(this.radius, Math.min(W - this.radius, this.x));
       this.y = Math.max(this.radius, Math.min(H - this.radius, this.y));
       this.isStriking = false;
+      this.strikeTrail = [];
     }
-    // Fade trails
-    for (const tr of this.strikeTrail) tr.life -= 0.016;
+    for (const tr of this.strikeTrail) tr.life -= 0.03;
     this.strikeTrail = this.strikeTrail.filter(t => t.life > 0);
   }
+
+  updateFake() {
+    if (!this.fakeActive) return;
+    const t = now();
+    this.fakeOrbsAngle += 0.1;
+    if (t - this.fakeStart >= this.fakeDuration) {
+      const diff = game.difficultyKey;
+      const mult = (diff === "master" || diff === "hell") ? 0.5 : 1.0;
+      const heal = Math.floor(this.fakeAbsorbed * 1.5 * mult);
+      this.hp = Math.min(this.maxHp, this.hp + heal);
+      this.fakeActive = false;
+      this.fakeLastUsed = t;
+      this.fakeAbsorbed = 0;
+      this.takeMandatoryDamage(1);
+    }
+  }
+  takeMandatoryDamage(n) {
+    this.hp -= n;
+    if (this.hp <= 0) { this.hp = 0; this.isAlive = false; }
+  }
   takeDamage(n = 1) {
-    if (this.isStriking) return; // invulnerable while striking
+    if (this.isStriking) return;
+    if (this.fakeActive) {
+      this.fakeAbsorbed += n;
+      return;
+    }
     if (this.shieldHp > 0) {
       const absorbed = Math.min(this.shieldHp, n);
       this.shieldHp -= absorbed;
       n -= absorbed;
       if (this.shieldHp <= 0) {
         this.shieldHp = 0;
-        this.shieldLastUsed = now(); // start cooldown now
+        this.shieldLastUsed = now();
       }
+    }
+    if (n <= 0) return;
+    this.hp -= n;
+    this.damageTakenThisLife += n;
+    if (this.hp <= 0) { this.hp = 0; this.isAlive = false; }
+  }
+  onKill() {
+    this.kills++;
+    if (this.kills % 25 === 0) this.hp = Math.min(this.maxHp, this.hp + 10);
+  }
+}
+
+// ===================== HELPER (grey, free-moving, random skills, 1/2 damage) =====================
+class Helper {
+  constructor(x, y, equipped) {
+    this.x = x; this.y = y;
+    this.radius = 12;
+    this.baseSpeed = 5.0 * SPEED_MULT;
+    this.angle = 0;
+    this.equipped = equipped;
+    this.maxHp = 25;      // Grey can be destroyed — 25 HP
+    this.hp = 25;
+    this.isAlive = true;
+    this.lastShot = 0;
+    this.lastRocket = 0;
+    this.lastShield = -30;
+    this.lastBeam = 0;
+    this.shieldHp = 0;
+    this.roamAngle = Math.random() * Math.PI * 2;
+    this.roamTimer = 0;
+    this.skillTimer = Math.random() * 2;
+  }
+  takeDamage(n) {
+    if (this.shieldHp > 0) {
+      const absorbed = Math.min(this.shieldHp, n);
+      this.shieldHp -= absorbed;
+      n -= absorbed;
+      if (this.shieldHp < 0) this.shieldHp = 0;
     }
     if (n <= 0) return;
     this.hp -= n;
     if (this.hp <= 0) { this.hp = 0; this.isAlive = false; }
   }
+  update(target, enemies, redBullets, redRockets) {
+    if (!this.isAlive || !target.isAlive) return;
+    const t = now();
+
+    this.roamTimer -= 0.016;
+    if (this.roamTimer <= 0) {
+      this.roamAngle = Math.random() * Math.PI * 2;
+      this.roamTimer = 1 + Math.random() * 2;
+    }
+    // Free movement — drift toward red's vicinity but not strictly attached
+    const dx = target.x - this.x, dy = target.y - this.y;
+    const d = Math.hypot(dx, dy) || 1;
+    const orbitX = target.x + Math.cos(this.roamAngle) * 140;
+    const orbitY = target.y + Math.sin(this.roamAngle) * 140;
+    const ox = orbitX - this.x, oy = orbitY - this.y;
+    const od = Math.hypot(ox, oy) || 1;
+    if (od > 20) {
+      this.x += (ox / od) * this.baseSpeed;
+      this.y += (oy / od) * this.baseSpeed;
+    }
+
+    let best = null, bestD = Infinity;
+    for (const e of enemies) {
+      if (!e.isAlive) continue;
+      const ed = Math.hypot(e.x - this.x, e.y - this.y);
+      if (ed < bestD) { bestD = ed; best = e; }
+    }
+    if (best) this.angle = Math.atan2(best.y - this.y, best.x - this.x);
+
+    if (t - this.lastShot > 0.15) {
+      this.lastShot = t;
+      const b = new Bullet(this.x, this.y, this.angle, 11, 4, "#bbbbbb", false);
+      b.fromHelper = true;
+      b.damageMult = 0.5;
+      redBullets.push(b);
+    }
+
+    this.skillTimer -= 0.016;
+    if (this.skillTimer <= 0) {
+      this.skillTimer = 2 + Math.random() * 3;
+      const chosen = ["rocket", "beam", "shield", "dash"];
+      const pick = chosen[Math.floor(Math.random() * chosen.length)];
+      if (pick === "rocket" && t - this.lastRocket > 4 && best) {
+        this.lastRocket = t;
+        const r = new Rocket(this.x, this.y, best, 5.0, "#88aaff", true);
+        r.damage = 0.5;
+        redRockets.push(r);
+      } else if (pick === "beam" && t - this.lastBeam > 6 && best) {
+        this.lastBeam = t;
+        const sb = new StrongBullet(this.x, this.y, this.angle);
+        sb.fromHelper = true;
+        sb.speed = 17 * SPEED_MULT * 0.7;
+        game.redStrongBullets.push(sb);
+      } else if (pick === "shield" && this.shieldHp <= 0 && t - this.lastShield > 30) {
+        this.shieldHp = 5;
+        this.lastShield = t;
+      } else if (pick === "dash") {
+        this.x += Math.cos(this.angle) * 30;
+        this.y += Math.sin(this.angle) * 30;
+      }
+    }
+
+    this.x = Math.max(this.radius, Math.min(W - this.radius, this.x));
+    this.y = Math.max(this.radius, Math.min(H - this.radius, this.y));
+  }
+  draw() {
+    if (this.shieldHp > 0) {
+      ctx.strokeStyle = "#06d6a0"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(this.x, this.y, this.radius + 4, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    drawTri(this.x, this.y, this.radius, this.angle, "#888888");
+    drawHpBar(this.x, this.y, this.hp, this.maxHp, "#bbbbbb");
+  }
 }
 
-// ===================== ENEMIES =====================
+// ===================== YELLOW (new, complex AI) =====================
 /*
-  Yellow Trans-Am:
-  - Whenever Trans-Am is "on", yellow moves 1.5x faster and leaves a white shadow trail.
-  - Only does the crash-dash toward red while Trans-Am is ON.
-  - Trans-Am window lasts 30s then goes on 10s cooldown, then re-opens.
-  - Dash still locks target position at start (dodgeable).
+  Yellow behavior:
+  1. RAPID FIRE — fires single bullets at red continuously like red does
+  2. POWER SHOT — after rapid-fire phase, charges then fires a big shot.
+     Warning shown before. Yellow moves and aims while using it.
+  3. CRASH — dash to red (unchanged, faster aim), yellow crash ends at edge
+  4. DODGE — actively dodges red power shot, fake, and rockets.
+     Uses its own "crash" to bounce away, with an "eject" interaction.
+  HP: 77 (35 * 2.2) — needs many hits to kill.
 */
 class YellowTriangle {
-  constructor(x, y, hp = 4) {
+  constructor(x, y, hp = 77) {
     this.x = x; this.y = y;
     this.radius = 22;
     this.baseSpeed = 8.5 * SPEED_MULT;
@@ -305,116 +541,241 @@ class YellowTriangle {
     this.maxHp = hp; this.hp = hp; this.isAlive = true;
     this.preferredDistance = 260;
 
-    this.transAmActive = false;
-    this.transAmNext = now() + 1.5;  // small delay before first activation
-    this.transAmEnd = 0;
-    this.transAmDuration = 30;
-    this.transAmCooldown = 10;
+    // Shooting phase
+    this.attackMode = "rapid";  // rapid | power_charge | power_fire | crash
+    this.modeTimer = now() + 1.0;
+    this.rapidShootTimer = 0;
+    this.rapidShootInterval = 0.4;  // bullet fire
+    this.rapidDuration = 3.0;       // how long to rapid fire before power shot
+    this.rapidShootStarted = 0;
 
+    // Power shot
+    this.powerChargeStart = 0;
+    this.powerChargeDuration = 1.5; // warning period
+    this.powerShootDone = false;
+
+    // Crash
     this.isCharging = false; this.isDashing = false;
     this.chargeStart = 0;
     this.dashDir = [0, 0];
     this.dashTravelled = 0; this.dashMaxDist = 0;
     this.dashHitDone = false;
-    this.lastAttackTime = now();
-    this.attackInterval = 1.5;
+    this.crashCooldownUntil = 0;
     this.trail = [];
+
+    // Dodge
+    this.isDodging = false;
+    this.dodgeDir = [0, 0];
+    this.dodgeStart = 0;
+    this.dodgeDuration = 0.5;
+    this.dodgeCooldown = 0;
+
+    // Bounce (when red/yellow crash collide)
+    this.bounceActive = false;
+    this.bounceStart = 0;
+    this.bounceFrom = [0, 0];
+    this.bounceTo = [0, 0];
+    this.bounceDuration = 0.35;
+    this.crashTarget = null;  // grey helper targeted during crash
+
+    this.canShoot = true;
   }
   takeDamage(n = 1) {
     this.hp -= n;
     if (this.hp <= 0) { this.hp = 0; this.isAlive = false; }
   }
-  updateTransAmState() {
+
+  // Attempt to dodge an incoming threat
+  tryDodge(threatX, threatY) {
     const t = now();
-    if (!this.transAmActive && t >= this.transAmNext) {
-      this.transAmActive = true;
-      this.transAmEnd = t + this.transAmDuration;
-    } else if (this.transAmActive && t >= this.transAmEnd) {
-      this.transAmActive = false;
-      this.transAmNext = t + this.transAmCooldown;
-    }
+    if (t < this.dodgeCooldown) return false;
+    if (this.isDodging || this.isDashing || this.isCharging) return false;
+    const dx = this.x - threatX, dy = this.y - threatY;
+    const d = Math.hypot(dx, dy) || 1;
+    this.dodgeDir = [dx / d, dy / d];
+    this.isDodging = true;
+    this.dodgeStart = t;
+    this.dodgeDuration = 0.35;
+    this.dodgeCooldown = t + 1.2;
+    return true;
   }
-  triggerDash(target) {
-    if (!this.transAmActive) return;
+
+  triggerCrash(target) {
     if (this.isCharging || this.isDashing) return;
+    this.attackMode = "crash";
     this.isCharging = true;
     this.chargeStart = now();
     const dx = target.x - this.x, dy = target.y - this.y;
     const d = Math.hypot(dx, dy) || 1;
     this.dashDir = [dx / d, dy / d];
-    this.dashMaxDist = d + 120;
+    this.dashMaxDist = Math.max(W, H) * 1.5;
     this.dashTravelled = 0;
     this.dashHitDone = false;
+    // Prefer targeting a grey helper if any
+    const helpers = game.player.helpActive ? game.player.helpers.filter(h => h.isAlive) : [];
+    if (helpers.length) {
+      let nearest = helpers[0], nd = Infinity;
+      for (const h of helpers) {
+        const dd = Math.hypot(h.x - this.x, h.y - this.y);
+        if (dd < nd) { nd = dd; nearest = h; }
+      }
+      this.crashTarget = nearest;
+    }
   }
+
   updateDash(target) {
     const elapsed = now() - this.chargeStart;
     if (this.isCharging) {
-      if (elapsed >= 0.7) { this.isCharging = false; this.isDashing = true; }
+      if (elapsed >= 0.4) { this.isCharging = false; this.isDashing = true; }
     } else if (this.isDashing) {
       const sp = this.baseSpeed * 5;
       this.x += this.dashDir[0] * sp;
       this.y += this.dashDir[1] * sp;
       this.dashTravelled += sp;
+
+      // Damage any grey first
+      if (game.player.helpActive) {
+        for (const h of game.player.helpers) {
+          if (h.isAlive && Math.hypot(h.x - this.x, h.y - this.y) < this.radius + h.radius) {
+            h.takeDamage(10);
+            this.dashHitDone = true;
+          }
+        }
+      }
+
       if (!this.dashHitDone && target.isAlive &&
           Math.hypot(target.x - this.x, target.y - this.y) < this.radius + target.radius) {
-        target.takeDamage(3);
+        target.takeDamage(5);
         this.dashHitDone = true;
+        // Both bounce — red and yellow return to pre-crash positions
+        this.startBounce();
+        target.startCrashBounce(this.x, this.y);
       }
-      if (this.dashTravelled >= this.dashMaxDist) this.isDashing = false;
+      if (this.x < this.radius || this.x > W - this.radius ||
+          this.y < this.radius || this.y > H - this.radius ||
+          this.dashTravelled >= this.dashMaxDist) {
+        this.isDashing = false;
+        this.trail = [];
+        this.x = Math.max(this.radius, Math.min(W - this.radius, this.x));
+        this.y = Math.max(this.radius, Math.min(H - this.radius, this.y));
+        this.crashCooldownUntil = now() + 4;
+        this.attackMode = "rapid";
+        this.rapidShootStarted = now();
+      }
     }
   }
+
+  startBounce() {
+    this.bounceActive = true;
+    this.bounceStart = now();
+    this.bounceFrom = [this.x, this.y];
+    // Bounce back 200px opposite to crash direction
+    this.bounceTo = [
+      Math.max(this.radius, Math.min(W - this.radius, this.x - this.dashDir[0] * 200)),
+      Math.max(this.radius, Math.min(H - this.radius, this.y - this.dashDir[1] * 200))
+    ];
+    this.isDashing = false;
+    this.isCharging = false;
+  }
+
+  updateBounce() {
+    if (!this.bounceActive) return;
+    const elapsed = now() - this.bounceStart;
+    const f = Math.min(1, elapsed / this.bounceDuration);
+    this.x = this.bounceFrom[0] + (this.bounceTo[0] - this.bounceFrom[0]) * f;
+    this.y = this.bounceFrom[1] + (this.bounceTo[1] - this.bounceFrom[1]) * f;
+    if (f >= 1) {
+      this.bounceActive = false;
+      this.attackMode = "rapid";
+      this.rapidShootStarted = now();
+      this.crashCooldownUntil = now() + 3;
+    }
+  }
+
   update(target, enemyBullets) {
     if (!this.isAlive || !target.isAlive) return;
-    this.updateTransAmState();
-
-    const speedMult = this.transAmActive ? 1.5 : 1.0;
-    const speed = this.baseSpeed * speedMult;
+    const t = now();
     const dx = target.x - this.x, dy = target.y - this.y;
     const dist = Math.hypot(dx, dy) || 1;
     this.angle = Math.atan2(dy, dx);
 
-    // Trail for Trans-Am
-    if (this.transAmActive) {
-      this.trail.push({ x: this.x, y: this.y, a: this.angle, life: 0.35 });
+    // Bounce
+    if (this.bounceActive) {
+      this.updateBounce();
+      return;
     }
-    for (const tr of this.trail) tr.life -= 0.016;
-    this.trail = this.trail.filter(t => t.life > 0);
 
-    if (this.isCharging || this.isDashing) {
-      this.updateDash(target);
-    } else {
-      if (dist < this.preferredDistance - 25) {
-        this.x -= (dx / dist) * speed;
-        this.y -= (dy / dist) * speed;
-      } else if (dist > this.preferredDistance + 25) {
-        this.x += (dx / dist) * speed;
-        this.y += (dy / dist) * speed;
-      } else {
-        const px = -dy / dist, py = dx / dist;
-        this.x += px * speed * 0.7;
-        this.y += py * speed * 0.7;
+    // Dodge
+    if (this.isDodging) {
+      const f = (t - this.dodgeStart) / this.dodgeDuration;
+      if (f >= 1) this.isDodging = false;
+      else {
+        const sp = this.baseSpeed * 2.5;
+        this.x += this.dodgeDir[0] * sp;
+        this.y += this.dodgeDir[1] * sp;
+        this.x = Math.max(this.radius, Math.min(W - this.radius, this.x));
+        this.y = Math.max(this.radius, Math.min(H - this.radius, this.y));
+        return;
       }
-      if (now() - this.lastAttackTime >= this.attackInterval) {
-        this.lastAttackTime = now();
-        const choice = this.transAmActive
-          ? ["multi", "single_strong", "trans_am"][Math.floor(Math.random() * 3)]
-          : ["multi", "single_strong"][Math.floor(Math.random() * 2)];
-        if (choice === "multi") {
-          for (const s of [-0.32, -0.16, 0, 0.16, 0.32]) {
-            enemyBullets.push(new Bullet(this.x, this.y, this.angle + s, 9.5, 5, "#ffe66d"));
-          }
-        } else if (choice === "single_strong") {
-          enemyBullets.push(new Bullet(this.x, this.y, this.angle, 16, 9, "#ffffff", true));
+    }
+
+    // Crash state
+    if (this.isCharging || this.isDashing) {
+      this.trail.push({ x: this.x, y: this.y, a: this.angle, life: 0.35 });
+      for (const tr of this.trail) tr.life -= 0.03;
+      this.trail = this.trail.filter(t => t.life > 0);
+      this.updateDash(target);
+      return;
+    }
+
+    // Movement — stay at preferred distance / orbit
+    const speed = this.baseSpeed;
+    if (dist < this.preferredDistance - 25) {
+      this.x -= (dx / dist) * speed * 0.6;
+      this.y -= (dy / dist) * speed * 0.6;
+    } else if (dist > this.preferredDistance + 25) {
+      this.x += (dx / dist) * speed * 0.6;
+      this.y += (dy / dist) * speed * 0.6;
+    } else {
+      const px = -dy / dist, py = dx / dist;
+      this.x += px * speed * 0.5;
+      this.y += py * speed * 0.5;
+    }
+
+    // Attack loop
+    if (this.attackMode === "rapid") {
+      // Rapid fire
+      if (t - this.rapidShootStarted > this.rapidDuration) {
+        this.attackMode = "power_charge";
+        this.powerChargeStart = t;
+        this.powerShootDone = false;
+      } else if (this.canShoot && t - this.rapidShootTimer >= this.rapidShootInterval) {
+        this.rapidShootTimer = t;
+        enemyBullets.push(new Bullet(this.x, this.y, this.angle, 11, 6, "#ffe66d"));
+      }
+    } else if (this.attackMode === "power_charge") {
+      // Charge warning — moves and aims while doing this
+      if (t - this.powerChargeStart >= this.powerChargeDuration) {
+        // Fire big shot
+        const b = new Bullet(this.x, this.y, this.angle, 22, 12, "#ffffff", true);
+        b.damageMult = 2;
+        enemyBullets.push(b);
+        this.powerShootDone = true;
+        // Occasionally crash after power shot
+        if (t > this.crashCooldownUntil && Math.random() < 0.4) {
+          this.triggerCrash(target);
         } else {
-          this.triggerDash(target);
+          this.attackMode = "rapid";
+          this.rapidShootStarted = t;
         }
       }
     }
+
     this.x = Math.max(this.radius, Math.min(W - this.radius, this.x));
     this.y = Math.max(this.radius, Math.min(H - this.radius, this.y));
   }
+
   draw() {
-    // Trail
     for (const tr of this.trail) {
       ctx.globalAlpha = Math.max(0, tr.life / 0.35) * 0.5;
       drawTri(tr.x, tr.y, this.radius * 0.9, tr.a, "#ffffff");
@@ -422,9 +783,16 @@ class YellowTriangle {
     ctx.globalAlpha = 1;
 
     let color = "#f9d56e";
-    if (this.isCharging) color = (Math.floor(now() * 20) % 2 === 0) ? "#ffffff" : "#ffdddd";
-    else if (this.isDashing) color = "#ff5500";
-    else if (this.transAmActive) color = "#ffe066";
+    if (this.attackMode === "power_charge") {
+      // Warning: flashing
+      color = (Math.floor(now() * 15) % 2 === 0) ? "#ffddaa" : "#ff8800";
+    } else if (this.isDodging) {
+      color = "#aaffaa";
+    } else if (this.isCharging) {
+      color = (Math.floor(now() * 20) % 2 === 0) ? "#ffffff" : "#ffdddd";
+    } else if (this.isDashing) {
+      color = "#ff5500";
+    }
 
     drawTri(this.x, this.y, this.radius, this.angle, color);
     drawHpBar(this.x, this.y, this.hp, this.maxHp);
@@ -433,50 +801,22 @@ class YellowTriangle {
       ctx.strokeStyle = "#ff0000"; ctx.lineWidth = 2; ctx.setLineDash([6, 6]);
       ctx.beginPath();
       ctx.moveTo(this.x, this.y);
-      ctx.lineTo(this.x + this.dashDir[0] * this.dashMaxDist,
-                 this.y + this.dashDir[1] * this.dashMaxDist);
+      ctx.lineTo(this.x + this.dashDir[0] * 400,
+                 this.y + this.dashDir[1] * 400);
       ctx.stroke(); ctx.setLineDash([]);
     }
+    if (this.attackMode === "power_charge") {
+      // Warning circle
+      const f = (now() - this.powerChargeStart) / this.powerChargeDuration;
+      ctx.strokeStyle = `rgba(255,80,0,${0.4 + 0.6 * f})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(this.x, this.y, this.radius + 15 + f * 15, 0, Math.PI * 2);
+      ctx.stroke();
+    }
   }
 }
 
-class BlueTriangle {
-  constructor(x, y) {
-    this.x = x; this.y = y;
-    this.radius = 17; this.speed = 4.8 * SPEED_MULT; this.angle = 0;
-    this.maxHp = 2; this.hp = 2; this.isAlive = true;
-    this.lastRocketTime = now(); this.rocketInterval = 2.0;
-  }
-  takeDamage(n = 1) {
-    this.hp -= n;
-    if (this.hp <= 0) { this.hp = 0; this.isAlive = false; }
-  }
-  update(target, enemyRockets) {
-    if (!this.isAlive || !target.isAlive) return;
-    const dx = target.x - this.x, dy = target.y - this.y;
-    const dist = Math.hypot(dx, dy) || 1;
-    this.angle = Math.atan2(dy, dx);
-    if (dist > 120) {
-      this.x += (dx / dist) * this.speed;
-      this.y += (dy / dist) * this.speed;
-    }
-    if (now() - this.lastRocketTime >= this.rocketInterval) {
-      this.lastRocketTime = now();
-      for (let i = 0; i < 3; i++) {
-        if (enemyRockets.length < 10) {
-          enemyRockets.push(new Rocket(this.x, this.y, target, 5.0, "#ff9f43"));
-        }
-      }
-    }
-    this.x = Math.max(this.radius, Math.min(W - this.radius, this.x));
-    this.y = Math.max(this.radius, Math.min(H - this.radius, this.y));
-  }
-  draw() {
-    drawTri(this.x, this.y, this.radius, this.angle, "#00adb5");
-    drawHpBar(this.x, this.y, this.hp, this.maxHp);
-  }
-}
-
+// ===================== PURPLE (unchanged) =====================
 class PurpleTriangle {
   constructor(x, y) {
     this.x = x; this.y = y;
@@ -507,7 +847,9 @@ class PurpleTriangle {
     }
     if (now() - this.lastShotTime >= this.shotInterval) {
       this.lastShotTime = now();
-      enemyBullets.push(new Bullet(this.x, this.y, this.angle, 9, 6, "#c77dff"));
+      const b = new Bullet(this.x, this.y, this.angle, 9, 6, "#c77dff");
+      b.damageMult = 0.5;
+      enemyBullets.push(b);
     }
     this.x = Math.max(this.radius, Math.min(W - this.radius, this.x));
     this.y = Math.max(this.radius, Math.min(H - this.radius, this.y));
@@ -518,66 +860,164 @@ class PurpleTriangle {
   }
 }
 
-// ===================== DIFFICULTY =====================
+// ===================== GREEN (merged; rockets dark blue straight-line) =====================
+class GreenTriangle {
+  constructor(x, y) {
+    this.x = x; this.y = y;
+    this.radius = 18; this.speed = 4.5 * SPEED_MULT; this.angle = 0;
+    this.maxHp = 4; this.hp = 4; this.isAlive = true;
+    this.preferredDistance = 380;
+    this.state = "firing";
+    this.fireCooldown = now() + 1.0;
+    this.waitStart = 0;
+    this.chargeStart = 0;
+    this.dashDir = [0, 0];
+    this.dashTravelled = 0;
+    this.dashMaxDist = 0;
+    this.dashHitDone = false;
+  }
+  takeDamage(n = 1) {
+    this.hp -= n;
+    if (this.hp <= 0) { this.hp = 0; this.isAlive = false; }
+  }
+  update(target, enemyRockets) {
+    if (!this.isAlive || !target.isAlive) return;
+    const t = now();
+    const dx = target.x - this.x, dy = target.y - this.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    this.angle = Math.atan2(dy, dx);
+
+    if (this.state !== "dashing") {
+      if (dist > this.preferredDistance - 40) {
+        this.x += (dx / dist) * this.speed;
+        this.y += (dy / dist) * this.speed;
+      } else if (dist < this.preferredDistance - 100) {
+        this.x -= (dx / dist) * this.speed;
+        this.y -= (dy / dist) * this.speed;
+      }
+    }
+
+    if (this.state === "firing") {
+      if (t >= this.fireCooldown) {
+        for (let i = 0; i < 7; i++) {
+          if (enemyRockets.length < 30) {
+            // Dark blue straight-line rockets — target red's CURRENT position (locks in)
+            enemyRockets.push(new Rocket(this.x, this.y, target, 6.5, "#1a3a8a"));
+          }
+        }
+        this.state = "waiting";
+        this.waitStart = t;
+      }
+    } else if (this.state === "waiting") {
+      const rocketCount = enemyRockets.filter(r => r.target === target).length;
+      if (rocketCount === 0 || t - this.waitStart >= 4) {
+        this.state = "charging";
+        this.chargeStart = t;
+        this.dashDir = [dx / dist, dy / dist];
+        this.dashMaxDist = dist + 150;
+        this.dashTravelled = 0;
+        this.dashHitDone = false;
+      }
+    } else if (this.state === "charging") {
+      if (t - this.chargeStart >= 2.0) {
+        this.state = "dashing";
+      }
+    } else if (this.state === "dashing") {
+      const sp = this.speed * 5;
+      this.x += this.dashDir[0] * sp;
+      this.y += this.dashDir[1] * sp;
+      this.dashTravelled += sp;
+      if (!this.dashHitDone && target.isAlive &&
+          Math.hypot(target.x - this.x, target.y - this.y) < this.radius + target.radius + this.radius * 0.5) {
+        target.takeDamage(3);
+        this.dashHitDone = true;
+      }
+      if (this.dashTravelled >= this.dashMaxDist ||
+          this.x < this.radius || this.x > W - this.radius ||
+          this.y < this.radius || this.y > H - this.radius) {
+        this.state = "firing";
+        this.fireCooldown = now() + 2.0;
+      }
+    }
+    this.x = Math.max(this.radius, Math.min(W - this.radius, this.x));
+    this.y = Math.max(this.radius, Math.min(H - this.radius, this.y));
+  }
+  draw() {
+    let color = "#06d6a0";
+    if (this.state === "charging") color = (Math.floor(now() * 10) % 2 === 0) ? "#ffffff" : "#88ffcc";
+    else if (this.state === "dashing") color = "#00ff88";
+    drawTri(this.x, this.y, this.radius, this.angle, color);
+    drawHpBar(this.x, this.y, this.hp, this.maxHp);
+
+    if (this.state === "charging") {
+      ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2; ctx.setLineDash([6, 6]);
+      ctx.beginPath();
+      ctx.moveTo(this.x, this.y);
+      ctx.lineTo(this.x + this.dashDir[0] * this.dashMaxDist,
+                 this.y + this.dashDir[1] * this.dashMaxDist);
+      ctx.stroke(); ctx.setLineDash([]);
+    }
+  }
+}
+
+// ===================== DIFFICULTY (enemy counts reduced) =====================
 const DIFFICULTIES = {
   news: {
     name: "NEWS", subtitle: "新闻 · 轻松入门", color: "#06d6a0",
     playerHp: 20,
-    startEnemies: { yellow: 0, blue: 3, purple: 5 },
-    maxEnemies:  { yellow: 0, blue: 3, purple: 5 },
+    startEnemies: { yellow: 0, purple: 3, green: 2 },
+    maxEnemies:  { yellow: 0, purple: 3, green: 2 },
     scoreForYellow: null, maxYellowsOnScreen: 0,
-    desc: "5 紫色 + 3 蓝色，无黄色",
+    desc: "3 紫色 + 2 绿色 · 无黄色",
   },
   battlers: {
     name: "BATTLERS", subtitle: "战士 · 挑战", color: "#ff9f1c",
     playerHp: 60,
-    startEnemies: { yellow: 0, blue: 4, purple: 8 },
-    maxEnemies:  { yellow: 2, blue: 4, purple: 8 },
+    startEnemies: { yellow: 0, purple: 5, green: 3 },
+    maxEnemies:  { yellow: 2, purple: 5, green: 3 },
     scoreForYellow: 1500, maxYellowsOnScreen: 1,
-    desc: "60 HP · 8 紫色 + 4 蓝色 · 得分 >1500 出现黄色(仅1只)",
+    desc: "60 HP · 5 紫色 + 3 绿色 · 得分 >1500 出现黄色(仅1只)",
   },
   master: {
     name: "MASTER", subtitle: "大师 · 强敌", color: "#ff2e63",
     playerHp: 30,
-    startEnemies: { yellow: 2, blue: 3, purple: 0 },
-    maxEnemies:  { yellow: 8, blue: 3, purple: 0 },
+    startEnemies: { yellow: 2, purple: 0, green: 4 },
+    maxEnemies:  { yellow: 8, purple: 0, green: 4 },
     scoreForYellow: 0, maxYellowsOnScreen: 99,
-    desc: "0 紫色 · 3 蓝色 · 多只黄色同时出现",
+    desc: "0 紫色 · 4 绿色 · 多只黄色同时出现",
   },
   hell: {
     name: "HELL", subtitle: "地狱 · 只进不退", color: "#ff0000",
     playerHp: 20,
-    startEnemies: { yellow: 5, blue: 5, purple: 0 },
-    maxEnemies:  { yellow: 99, blue: 99, purple: 0 },
+    startEnemies: { yellow: 1, purple: 0, green: 0 },
+    maxEnemies:  { yellow: 99, purple: 0, green: 0 },
     scoreForYellow: 0, maxYellowsOnScreen: 99,
-    desc: "开局 5 黄色 + 5 蓝色 · 无紫色",
+    desc: "开局 1 黄色 · 无紫色 · 无绿色",
   },
 };
 
-// Skill shop definitions
 const SKILLS = {
-  shield: {
-    name: "SHIELD", subtitle: "护盾 · 吸收10次攻击", cost: 300,
-    desc: "绿色护盾。吸收10次碰撞，护盾HP归0后冷却30s。",
-  },
-  strike: {
-    name: "STRIKE", subtitle: "突进 · 冲向边缘碾压敌人", cost: 500,
-    desc: "释放右摇杆时向前冲，触碰边缘停止，无敌，留下白色残影。",
-  },
+  shield:   { name: "SHIELD",   cost: 300 },
+  strike:   { name: "STRIKE",   cost: 500 },
+  lockon:   { name: "LOCKON",   cost: 100 },
+  fake:     { name: "FAKE",     cost: 400 },
+  help:     { name: "HELP",     cost: 600 },
 };
+
+const MAX_EQUIPPED = 3;
 
 // ===================== GAME =====================
 class Game {
   constructor() {
     this.touchMode = false;
-    this.state = "control"; // control | difficulty | shop | playing
+    this.state = "control";
     this.difficultyKey = null;
     this.difficulty = null;
     this.buttons = [];
 
-    // Persistent wallet
     this.marks = 0;
-    this.ownedSkills = { shield: false, strike: false };
+    this.ownedSkills = { shield: false, strike: false, lockon: false, fake: false, help: false };
+    this.equippedSkills = [];
 
     this.player = null;
     this.enemies = [];
@@ -589,7 +1029,7 @@ class Game {
 
     this.isShooting = false;
     this.lastAutoShootTime = 0;
-    this.autoShootInterval = 0.12;
+    this.autoShootInterval = 0.1;
 
     this.mousePos = [W / 2, H / 2];
     this.keys = {};
@@ -603,12 +1043,11 @@ class Game {
     this.skillR = 32;
     this.rocketBtn = { cx: 0, cy: 0 };
     this.powerBtn  = { cx: 0, cy: 0 };
-    this.shieldBtn = { cx: 0, cy: 0 };
-    this.strikeBtn = { cx: 0, cy: 0 };
-    this.powerShotPending = false;
+    this.skillBtns = {};
 
+    this.powerShotPending = false;
     this.touches = new Map();
-    this.returnToModeOnAnyInput = false; // after death
+    this.returnToModeOnAnyInput = false;
   }
 
   setupJoysticks() {
@@ -622,8 +1061,10 @@ class Game {
     const y0 = 50;
     this.rocketBtn.cx = W - 40; this.rocketBtn.cy = y0;
     this.powerBtn.cx  = W - 110; this.powerBtn.cy = y0;
-    this.shieldBtn.cx = W - 180; this.shieldBtn.cy = y0;
-    this.strikeBtn.cx = W - 250; this.strikeBtn.cy = y0;
+    this.skillBtns = {};
+    this.equippedSkills.forEach((s, i) => {
+      this.skillBtns[s] = { cx: W - 180 - i * 70, cy: y0 };
+    });
   }
 
   startGame(touchMode, difficultyKey) {
@@ -639,10 +1080,8 @@ class Game {
   resetPlay() {
     const d = this.difficulty;
     this.player = new PlayerRed(200, H / 2, d.playerHp);
-    // Carry skills from shop, and current score continues from wallet? No — reset score per run but keep marks.
-    this.player.score = this.marks; // marks equal score, kept across runs
-    this.player.hasShieldSkill = this.ownedSkills.shield;
-    this.player.hasStrikeSkill = this.ownedSkills.strike;
+    this.player.score = this.marks;
+    this.player.equipped = [...this.equippedSkills];
 
     this.redBullets = [];
     this.redStrongBullets = [];
@@ -652,13 +1091,12 @@ class Game {
     this.isShooting = false;
 
     this.enemies = [];
-    const spawnPoints = this.makeSpawnLayout(
-      d.startEnemies.yellow + d.startEnemies.blue + d.startEnemies.purple
-    );
+    const totalStart = d.startEnemies.yellow + d.startEnemies.purple + d.startEnemies.green;
+    const spawnPoints = this.makeSpawnLayout(totalStart);
     let i = 0;
-    for (let n = 0; n < d.startEnemies.yellow; n++) this.enemies.push(new YellowTriangle(...spawnPoints[i++], 4));
-    for (let n = 0; n < d.startEnemies.blue; n++)   this.enemies.push(new BlueTriangle(...spawnPoints[i++]));
+    for (let n = 0; n < d.startEnemies.yellow; n++) this.enemies.push(new YellowTriangle(...spawnPoints[i++], 77));
     for (let n = 0; n < d.startEnemies.purple; n++) this.enemies.push(new PurpleTriangle(...spawnPoints[i++]));
+    for (let n = 0; n < d.startEnemies.green; n++)  this.enemies.push(new GreenTriangle(...spawnPoints[i++]));
   }
 
   makeSpawnLayout(count) {
@@ -680,23 +1118,21 @@ class Game {
     const alive = this.enemies.filter(e => e.isAlive);
     const counts = {
       yellow: alive.filter(e => e instanceof YellowTriangle).length,
-      blue:   alive.filter(e => e instanceof BlueTriangle).length,
       purple: alive.filter(e => e instanceof PurpleTriangle).length,
+      green:  alive.filter(e => e instanceof GreenTriangle).length,
     };
+    const nonYellowTotal = counts.purple + counts.green;
     const yellowsUnlocked =
       d.scoreForYellow !== null &&
       this.player.score >= d.scoreForYellow &&
       d.maxEnemies.yellow > 0 &&
       counts.yellow < d.maxYellowsOnScreen;
     const pool = [];
-    if (yellowsUnlocked) pool.push("yellow");
-    if (counts.blue   < d.maxEnemies.blue)   pool.push("blue");
-    if (counts.purple < d.maxEnemies.purple) pool.push("purple");
-    if (!pool.length) {
-      if (d.maxEnemies.yellow > 0 && counts.yellow < d.maxYellowsOnScreen) pool.push("yellow");
-      if (d.maxEnemies.blue > 0)   pool.push("blue");
-      if (d.maxEnemies.purple > 0) pool.push("purple");
+    if (nonYellowTotal < 5) {
+      if (counts.purple < d.maxEnemies.purple) pool.push("purple");
+      if (counts.green  < d.maxEnemies.green)  pool.push("green");
     }
+    if (yellowsUnlocked) pool.push("yellow");
     if (!pool.length) return null;
     return pool[Math.floor(Math.random() * pool.length)];
   }
@@ -704,31 +1140,43 @@ class Game {
   spawnRandomEnemy() {
     const type = this.chooseEnemyTypeToSpawn();
     if (!type) return null;
-    const side = Math.floor(Math.random() * 4);
-    let x, y;
-    if (side === 0)      { x = 50 + Math.random() * (W - 100); y = 30; }
-    else if (side === 1) { x = 50 + Math.random() * (W - 100); y = H - 30; }
-    else if (side === 2) { x = 30; y = 50 + Math.random() * (H - 100); }
-    else                 { x = W - 30; y = 50 + Math.random() * (H - 100); }
-    if (type === "yellow") return new YellowTriangle(x, y, 4);
-    if (type === "blue")   return new BlueTriangle(x, y);
-    return new PurpleTriangle(x, y);
+    let x, y, attempts = 0;
+    do {
+      const side = Math.floor(Math.random() * 4);
+      if (side === 0)      { x = 50 + Math.random() * (W - 100); y = 30; }
+      else if (side === 1) { x = 50 + Math.random() * (W - 100); y = H - 30; }
+      else if (side === 2) { x = 30; y = 50 + Math.random() * (H - 100); }
+      else                 { x = W - 30; y = 50 + Math.random() * (H - 100); }
+      attempts++;
+    } while (attempts < 30 && this.enemies.some(e =>
+      e.isAlive && Math.hypot(e.x - x, e.y - y) < (e.radius + 30)
+    ));
+    if (type === "yellow") return new YellowTriangle(x, y, 77);
+    if (type === "purple") return new PurpleTriangle(x, y);
+    if (type === "green")  return new GreenTriangle(x, y);
+    return null;
   }
 
   // ---------- INPUT ----------
   onPointerDown(id, x, y) {
-    // Death → return to mode select on any input
     if (this.returnToModeOnAnyInput) {
       this.returnToModeOnAnyInput = false;
       this.marks = this.player.score;
       this.state = "difficulty";
       return;
     }
-
     if (this.state === "control" || this.state === "difficulty" || this.state === "shop") {
       for (const b of this.buttons) {
         if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) { b.action(); return; }
       }
+      return;
+    }
+
+    if (this.player && this.player.lockonSelecting) {
+      this.player.lockonPath.push({ x, y, r: 80 });
+      setTimeout(() => {
+        if (this.player && this.player.lockonSelecting) this.player.commitLockon();
+      }, 400);
       return;
     }
 
@@ -737,18 +1185,16 @@ class Game {
       return;
     }
 
-    // Skill buttons (touch)
-    if (this.player.hasShieldSkill &&
-        Math.hypot(x - this.shieldBtn.cx, y - this.shieldBtn.cy) < this.skillR) {
-      this.touches.set(id, "shield");
-      this.player.activateShield();
-      return;
-    }
-    if (this.player.hasStrikeSkill &&
-        Math.hypot(x - this.strikeBtn.cx, y - this.strikeBtn.cy) < this.skillR) {
-      this.touches.set(id, "strike");
-      this.player.tryArmStrike();
-      return;
+    for (const [skillKey, btn] of Object.entries(this.skillBtns)) {
+      if (Math.hypot(x - btn.cx, y - btn.cy) < this.skillR) {
+        this.touches.set(id, skillKey);
+        if (skillKey === "shield") this.player.activateShield();
+        else if (skillKey === "strike") this.player.tryArmStrike();
+        else if (skillKey === "lockon") this.player.activateLockon();
+        else if (skillKey === "fake") this.player.activateFake();
+        else if (skillKey === "help") this.player.activateHelp();
+        return;
+      }
     }
     if (Math.hypot(x - this.rocketBtn.cx, y - this.rocketBtn.cy) < this.skillR) {
       this.touches.set(id, "rocket");
@@ -767,7 +1213,6 @@ class Game {
       return;
     }
 
-    // Joysticks
     if (Math.hypot(x - this.lJoy.cx, y - this.lJoy.cy) < this.lJoy.r * 1.6) {
       this.touches.set(id, "ljoy");
       this.lJoy.active = true; this.updateLJoy(x, y); return;
@@ -806,12 +1251,7 @@ class Game {
     } else if (t === "rjoy") {
       this.rJoy.active = false; this.rightFiring = false;
       this.rJoy.kx = this.rJoy.cx; this.rJoy.ky = this.rJoy.cy;
-
-      // Strike: fire on next right-joystick release
-      if (this.player.strikePending) {
-        this.player.beginStrike(this.rightAimAngle);
-      }
-      // Power shot pending
+      if (this.player.strikePending) this.player.beginStrike(this.rightAimAngle);
       if (this.powerShotPending && this.player.isAlive) {
         this.powerShotPending = false;
         const sb = this.player.fireStrongBullet(this.enemies);
@@ -854,32 +1294,46 @@ class Game {
       if (sb) this.redStrongBullets.push(sb);
     } else if (k === "e") {
       this.redRockets.push(...this.player.fireRockets(this.enemies));
-    } else if (k === "q") {
-      this.player.activateShield();
-    } else if (k === "f") {
+    } else if (k === "q") this.player.activateShield();
+    else if (k === "f") {
       this.player.tryArmStrike();
-      // For keyboard users: begin strike immediately, since there's no joystick release
       if (this.player.strikePending) this.player.beginStrike(this.player.angle);
-    } else if (k === " ") {
-      this.player.triggerDash();
-    }
+    } else if (k === "r") {
+      this.player.activateLockon();
+      if (this.player.lockonSelecting) {
+        this.player.lockonPath.push({ x: this.mousePos[0], y: this.mousePos[1], r: 80 });
+        this.player.commitLockon();
+      }
+    } else if (k === "g") this.player.activateFake();
+    else if (k === "h") this.player.activateHelp();
+    else if (k === " ") this.player.triggerDash();
   }
 
   // ---------- UPDATE ----------
   update() {
     if (this.state !== "playing" || !this.player) return;
 
-    let aimAngle;
-    if (this.touchMode) aimAngle = this.rightAimAngle;
-    else aimAngle = Math.atan2(this.mousePos[1] - this.player.y, this.mousePos[0] - this.player.x);
+    const aimAngle = this.touchMode ? this.rightAimAngle :
+      Math.atan2(this.mousePos[1] - this.player.y, this.mousePos[0] - this.player.x);
 
     const t = now();
-    // Firing disabled while striking
+    this.player.updateLockon();
+
     if (!this.player.isStriking) {
       const firing = (!this.touchMode && this.isShooting) || (this.touchMode && this.rightFiring);
       if (firing && this.player.isAlive && t - this.lastAutoShootTime >= this.autoShootInterval) {
         this.lastAutoShootTime = t;
-        this.redBullets.push(new Bullet(this.player.x, this.player.y, aimAngle, 12, 5, "#00fff5"));
+        const bullet = new Bullet(this.player.x, this.player.y, aimAngle, 12, 5, "#00fff5");
+        const locked = this.player.getLockonTargets();
+        if (locked.length) {
+          let best = null, bestD = Infinity;
+          for (const e of locked) {
+            const d = Math.hypot(e.x - this.player.x, e.y - this.player.y);
+            if (d < bestD) { bestD = d; best = e; }
+          }
+          if (best) { bullet.lockOnTarget = best; bullet.damageMult = 1.5; }
+        }
+        this.redBullets.push(bullet);
       }
     }
 
@@ -898,25 +1352,82 @@ class Game {
       this.player.move(0, 0, aimAngle);
     }
     this.player.updateStrike();
+    this.player.updateFake();
 
-    // Strike destroys everything it touches
+    if (this.player.helpActive) {
+      if (t - this.player.helpStart >= this.player.helpDuration) {
+        this.player.helpActive = false;
+        this.player.helpLastUsed = t;
+        this.player.helpers = [];
+      } else {
+        let allDead = true;
+        for (const h of this.player.helpers) {
+          h.update(this.player, this.enemies, this.redBullets, this.redRockets);
+          if (h.isAlive) allDead = false;
+        }
+        // All greys destroyed → start cooldown
+        if (allDead) {
+          this.player.helpActive = false;
+          this.player.helpLastUsed = t;
+          this.player.helpers = [];
+        }
+      }
+    }
+
     if (this.player.isStriking) {
+      const strikeRadius = this.player.radius * 1.5;
       for (const e of this.enemies) {
-        if (e.isAlive && Math.hypot(this.player.x - e.x, this.player.y - e.y) < e.radius + this.player.radius + 6) {
+        if (e.isAlive && Math.hypot(this.player.x - e.x, this.player.y - e.y) < e.radius + strikeRadius) {
           e.takeDamage(99);
         }
       }
     }
 
+    // Yellow shoot slot: only 5 can shoot
+    const yellows = this.enemies.filter(e => e instanceof YellowTriangle && e.isAlive);
+    const yellowsToShoot = yellows.slice(0, 5);
+    for (const y of yellows) y.canShoot = yellowsToShoot.includes(y);
+
     // Enemies
     const newEnemies = [];
     for (const e of this.enemies) {
       if (e instanceof YellowTriangle)    e.update(this.player, this.enemyBullets);
-      else if (e instanceof BlueTriangle) e.update(this.player, this.enemyRockets);
-      else                                e.update(this.player, this.enemyBullets);
+      else if (e instanceof GreenTriangle) e.update(this.player, this.enemyRockets);
+      else                                 e.update(this.player, this.enemyBullets);
+
+      // Yellow dodge logic: react to incoming projectiles
+      if (e instanceof YellowTriangle && e.isAlive) {
+        // Dodge red power shot
+        for (const sb of this.redStrongBullets) {
+          if (sb.active && Math.hypot(sb.x - e.x, sb.y - e.y) < 200) {
+            e.tryDodge(sb.x, sb.y);
+            break;
+          }
+        }
+        // Dodge red rockets
+        if (!e.isDodging) {
+          for (const r of this.redRockets) {
+            if (r.active && Math.hypot(r.x - e.x, r.y - e.y) < 140) {
+              e.tryDodge(r.x, r.y);
+              break;
+            }
+          }
+        }
+        // Dodge fake orbs bullets (they are red bullets, from helpers only matter in 2 attack modes)
+        if (!e.isDodging && this.player.fakeActive) {
+          for (const b of this.redBullets) {
+            if (b.active && Math.hypot(b.x - e.x, b.y - e.y) < 120) {
+              e.tryDodge(b.x, b.y);
+              break;
+            }
+          }
+        }
+      }
+
       if (e.isAlive) newEnemies.push(e);
       else {
         this.player.score += 100;
+        this.player.onKill();
         const resp = this.spawnRandomEnemy();
         if (resp) newEnemies.push(resp);
       }
@@ -929,37 +1440,81 @@ class Game {
     for (const b of this.enemyBullets)     b.update();
     for (const r of this.enemyRockets)     r.update();
 
-    // Player bullets vs enemies
+    // Fake orbs: two attack modes
+    if (this.player.fakeActive) {
+      if (this.player.fakeMode === "follow") {
+        // Fire in same direction as red
+        if (t - (this.player.lastFakeOrbShot || 0) > 0.3) {
+          this.player.lastFakeOrbShot = t;
+          const rr = this.player.radius + 20;
+          for (let i = 0; i < 2; i++) {
+            const a = this.player.fakeOrbsAngle + i * Math.PI;
+            const ox = this.player.x + Math.cos(a) * rr;
+            const oy = this.player.y + Math.sin(a) * rr;
+            const b = new Bullet(ox, oy, aimAngle, 11, 4, "#c77dff", false);
+            b.fromHelper = true;
+            b.damageMult = 0.5;
+            this.redBullets.push(b);
+          }
+        }
+      } else {
+        // Fire at enemies in different angles
+        if (t - (this.player.lastFakeOrbShot || 0) > 0.3) {
+          this.player.lastFakeOrbShot = t;
+          const rr = this.player.radius + 20;
+          const alive = this.enemies.filter(e => e.isAlive);
+          for (let i = 0; i < 2; i++) {
+            const a = this.player.fakeOrbsAngle + i * Math.PI;
+            const ox = this.player.x + Math.cos(a) * rr;
+            const oy = this.player.y + Math.sin(a) * rr;
+            let target = null;
+            if (alive.length) target = alive[(i + Math.floor(Math.random() * alive.length)) % alive.length];
+            const ang = target ? Math.atan2(target.y - oy, target.x - ox) : aimAngle;
+            const b = new Bullet(ox, oy, ang, 11, 4, "#c77dff", false);
+            b.fromHelper = true;
+            b.damageMult = 0.5;
+            this.redBullets.push(b);
+          }
+        }
+      }
+    }
+
+    // Collisions
     for (const b of this.redBullets) {
       if (!b.active) continue;
       for (const e of this.enemies) {
         if (e.isAlive && Math.hypot(b.x - e.x, b.y - e.y) < e.radius + b.radius) {
-          b.active = false; e.takeDamage(1); break;
+          const dmg = (b.lockOnTarget === e ? b.damageMult : 1) * (b.fromHelper ? 0.5 : 1);
+          e.takeDamage(dmg);
+          if (!b.piercing) b.active = false;
+          break;
         }
       }
     }
     for (const sb of this.redStrongBullets) {
       if (!sb.active) continue;
       for (const e of this.enemies) {
-        if (e.isAlive && Math.hypot(sb.x - e.x, sb.y - e.y) < e.radius + sb.radius) e.takeDamage(99);
+        if (e.isAlive && Math.hypot(sb.x - e.x, sb.y - e.y) < e.radius + sb.radius) {
+          const dmg = sb.lockOnTarget === e ? 99 * sb.damageMult : 99;
+          e.takeDamage(sb.fromHelper ? dmg * 0.5 : dmg);
+        }
       }
     }
     for (const r of this.redRockets) {
       if (!r.active) continue;
       for (const e of this.enemies) {
         if (e.isAlive && Math.hypot(r.x - e.x, r.y - e.y) < e.radius + r.radius) {
-          r.active = false; e.takeDamage(2); break;
+          r.active = false; e.takeDamage(r.damage * 2); break;
         }
       }
     }
 
-    // Enemy attacks vs player
     if (this.player.isAlive) {
       for (const b of this.enemyBullets) {
         if (b.active && Math.hypot(b.x - this.player.x, b.y - this.player.y) < this.player.radius + b.radius) {
           if (!b.piercing) b.active = false;
           else { b.x += b.dx * this.player.radius * 2.5; b.y += b.dy * this.player.radius * 2.5; }
-          this.player.takeDamage(1);
+          this.player.takeDamage(b.damageMult || 1);
         }
       }
       for (const r of this.enemyRockets) {
@@ -975,7 +1530,6 @@ class Game {
     this.enemyBullets     = this.enemyBullets.filter(b => b.active);
     this.enemyRockets     = this.enemyRockets.filter(r => r.active);
 
-    // Death handling: only set flag once
     if (!this.player.isAlive && !this.returnToModeOnAnyInput) {
       this.marks = this.player.score;
       this.returnToModeOnAnyInput = true;
@@ -991,8 +1545,44 @@ class Game {
     if (this.state === "difficulty") return this.drawDifficultySelect();
     if (this.state === "shop")       return this.drawShop();
 
-    // Player strike trails
-    if (this.player.strikeTrail) {
+    if (this.player.lockonSelecting) {
+      ctx.fillStyle = "rgba(0,0,0,0.4)"; ctx.fillRect(0, 0, W, H);
+      if (this.touchMode) {
+        ctx.fillStyle = "#00fff5"; ctx.font = "18px Helvetica"; ctx.textAlign = "center";
+        ctx.fillText("Tap to place lockon circle", W / 2, 60);
+        ctx.textAlign = "left";
+      } else {
+        ctx.fillStyle = "#00fff5"; ctx.font = "18px Helvetica"; ctx.textAlign = "center";
+        ctx.fillText("Move mouse & click to place lockon circle", W / 2, 60);
+        ctx.textAlign = "left";
+        ctx.strokeStyle = "#00fff5"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(this.mousePos[0], this.mousePos[1], 80, 0, Math.PI * 2); ctx.stroke();
+      }
+      for (const c of this.player.lockonPath) {
+        ctx.strokeStyle = "#00fff5"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+
+    const t = now();
+    for (const c of this.player.lockonCircles) {
+      const remain = c.expire - t;
+      if (remain > 0) {
+        ctx.strokeStyle = `rgba(0,255,245,${Math.min(1, remain / 2)})`;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]);
+        ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+    for (const e of this.player.lockonLocked) {
+      if (e.isAlive) {
+        ctx.strokeStyle = "#00fff5"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(e.x, e.y, e.radius + 8, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+
+    if (this.player.isStriking) {
       for (const tr of this.player.strikeTrail) {
         ctx.globalAlpha = Math.max(0, tr.life / 0.25) * 0.7;
         drawTri(tr.x, tr.y, this.player.radius, tr.a, "#ffffff");
@@ -1000,14 +1590,25 @@ class Game {
       ctx.globalAlpha = 1;
     }
 
-    // Player
+    for (const h of this.player.helpers) h.draw();
+
     if (this.player.isAlive) {
       let color = "#ff2e63";
       if (this.player.isStriking) color = "#ffffff";
       else if (now() < this.player.dashEndTime) color = "#ff8fa3";
-      else if (this.player.shieldHp > 0) color = "#06d6a0"; // green shield indicator
+      else if (this.player.shieldHp > 0) color = "#06d6a0";
 
-      // Shield ring
+      if (this.player.fakeActive) {
+        const r = this.player.radius + 20;
+        for (let i = 0; i < 2; i++) {
+          const a = this.player.fakeOrbsAngle + i * Math.PI;
+          const ox = this.player.x + Math.cos(a) * r;
+          const oy = this.player.y + Math.sin(a) * r;
+          ctx.strokeStyle = "#c77dff"; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(ox, oy, 10, 0, Math.PI * 2); ctx.stroke();
+        }
+      }
+
       if (this.player.shieldHp > 0) {
         ctx.strokeStyle = "#06d6a0"; ctx.lineWidth = 3;
         ctx.beginPath(); ctx.arc(this.player.x, this.player.y, this.player.radius + 6, 0, Math.PI * 2);
@@ -1016,6 +1617,14 @@ class Game {
 
       drawTri(this.player.x, this.player.y, this.player.radius, this.player.angle, color);
       drawHpBar(this.player.x, this.player.y, this.player.hp, this.player.maxHp, "#06d6a0");
+
+      if (this.player.strikePending) {
+        const ex = this.player.x + Math.cos(this.rightAimAngle) * 300;
+        const ey = this.player.y + Math.sin(this.rightAimAngle) * 300;
+        ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2; ctx.setLineDash([6, 6]);
+        ctx.beginPath(); ctx.moveTo(this.player.x, this.player.y); ctx.lineTo(ex, ey); ctx.stroke();
+        ctx.setLineDash([]);
+      }
     }
 
     for (const e of this.enemies) if (e.isAlive) e.draw();
@@ -1037,27 +1646,35 @@ class Game {
       }
     }
 
-    const t = now();
     const rkLeft = this.player.rocketCd - (t - this.player.lastRocketTime);
     const sbLeft = this.player.strongBulletCd - (t - this.player.lastStrongBulletTime);
-    this.drawSkillButton(this.rocketBtn, "rocket", "E / Tap",
+    this.drawSkillButton(this.rocketBtn, "rocket", "E",
       Math.max(0, rkLeft / this.player.rocketCd), this.touchesValueHas("rocket"));
-    this.drawSkillButton(this.powerBtn, "power", "C / Tap",
+    this.drawSkillButton(this.powerBtn, "power", "C",
       Math.max(0, sbLeft / this.player.strongBulletCd), this.touchesValueHas("power"));
 
-    if (this.player.hasShieldSkill) {
-      const shLeft = this.player.shieldHp > 0 ? 0 :
-        Math.max(0, this.player.shieldCd - (t - this.player.shieldLastUsed));
-      this.drawSkillButton(this.shieldBtn, "shield", "Q / Tap",
-        this.player.shieldHp > 0 ? 0 : shLeft / this.player.shieldCd,
-        this.touchesValueHas("shield"), this.player.shieldHp > 0);
-    }
-    if (this.player.hasStrikeSkill) {
-      const stLeft = this.player.isStriking ? 0 :
-        Math.max(0, this.player.strikeCd - (t - this.player.strikeLastUsed));
-      this.drawSkillButton(this.strikeBtn, "strike", "F / Tap",
-        stLeft / this.player.strikeCd, this.touchesValueHas("strike"),
-        this.player.strikePending || this.player.isStriking);
+    for (const [key, btn] of Object.entries(this.skillBtns)) {
+      let cdFrac = 0, glow = false;
+      if (key === "shield") {
+        cdFrac = this.player.shieldHp > 0 ? 0 :
+          Math.max(0, (this.player.shieldCd - (t - this.player.shieldLastUsed)) / this.player.shieldCd);
+        glow = this.player.shieldHp > 0;
+      } else if (key === "strike") {
+        cdFrac = Math.max(0, (this.player.strikeCd - (t - this.player.strikeLastUsed)) / this.player.strikeCd);
+        glow = this.player.strikePending || this.player.isStriking;
+      } else if (key === "lockon") {
+        cdFrac = Math.max(0, (this.player.lockonCd - (t - this.player.lockonLastUsed)) / this.player.lockonCd);
+        glow = this.player.lockonActive || this.player.lockonSelecting;
+      } else if (key === "fake") {
+        cdFrac = this.player.fakeActive ? 0 :
+          Math.max(0, (this.player.fakeCd - (t - this.player.fakeLastUsed)) / this.player.fakeCd);
+        glow = this.player.fakeActive;
+      } else if (key === "help") {
+        cdFrac = this.player.helpActive ? 0 :
+          Math.max(0, (this.player.helpCd - (t - this.player.helpLastUsed)) / this.player.helpCd);
+        glow = this.player.helpActive;
+      }
+      this.drawSkillButton(btn, key, this.skillLabel(key), cdFrac, this.touchesValueHas(key), glow);
     }
 
     this.drawHud();
@@ -1068,11 +1685,16 @@ class Game {
       ctx.textAlign = "center"; ctx.textBaseline = "middle";
       ctx.fillText("GAME OVER", W / 2, H / 2 - 40);
       ctx.font = "16px Helvetica"; ctx.fillStyle = "#ddd";
-      ctx.fillText(`Mode: ${this.difficulty.name}  |  Marks: ${this.player.score}`, W / 2, H / 2);
+      ctx.fillText(`Mode: ${this.difficulty.name}  |  Marks: ${this.player.score}  |  Kills: ${this.player.kills}`,
+                   W / 2, H / 2);
       ctx.fillStyle = "#00fff5";
       ctx.fillText("Press any key / tap to return to mode select", W / 2, H / 2 + 40);
       ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
     }
+  }
+
+  skillLabel(key) {
+    return { shield: "Q", strike: "F", lockon: "R", fake: "G", help: "H" }[key] || key[0].toUpperCase();
   }
 
   touchesValueHas(val) {
@@ -1107,8 +1729,8 @@ class Game {
       ctx.closePath(); ctx.fillStyle = "rgba(11,12,16,0.85)"; ctx.fill();
     }
     ctx.save(); ctx.globalAlpha = 0.55; ctx.fillStyle = "#dddddd";
+    const s = r * 0.5;
     if (symbol === "rocket") {
-      const s = r * 0.5;
       ctx.beginPath();
       ctx.moveTo(btn.cx, btn.cy - s);
       ctx.lineTo(btn.cx + s * 0.5, btn.cy);
@@ -1127,7 +1749,6 @@ class Game {
       }
       ctx.closePath(); ctx.fill();
     } else if (symbol === "shield") {
-      const s = r * 0.5;
       ctx.beginPath();
       ctx.moveTo(btn.cx, btn.cy - s);
       ctx.lineTo(btn.cx + s * 0.7, btn.cy - s * 0.4);
@@ -1137,13 +1758,25 @@ class Game {
       ctx.lineTo(btn.cx - s * 0.7, btn.cy - s * 0.4);
       ctx.closePath(); ctx.fill();
     } else if (symbol === "strike") {
-      const s = r * 0.5;
       ctx.beginPath();
       ctx.moveTo(btn.cx, btn.cy - s);
       ctx.lineTo(btn.cx + s * 0.4, btn.cy);
       ctx.lineTo(btn.cx, btn.cy + s);
       ctx.lineTo(btn.cx - s * 0.4, btn.cy);
       ctx.closePath(); ctx.fill();
+    } else if (symbol === "lockon") {
+      ctx.beginPath(); ctx.arc(btn.cx, btn.cy, s * 0.7, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(btn.cx, btn.cy, s * 0.3, 0, Math.PI * 2); ctx.fill();
+    } else if (symbol === "fake") {
+      ctx.beginPath(); ctx.arc(btn.cx, btn.cy, s * 0.8, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(btn.cx, btn.cy, s * 0.5, 0, Math.PI * 2); ctx.stroke();
+    } else if (symbol === "help") {
+      for (let i = 0; i < 3; i++) {
+        const a = i * Math.PI * 2 / 3;
+        const px = btn.cx + Math.cos(a) * s * 0.6;
+        const py = btn.cy + Math.sin(a) * s * 0.6;
+        ctx.beginPath(); ctx.arc(px, py, s * 0.25, 0, Math.PI * 2); ctx.fill();
+      }
     }
     ctx.restore();
     ctx.fillStyle = "#aaa"; ctx.font = "10px Helvetica";
@@ -1156,19 +1789,18 @@ class Game {
     const t = now();
     const dsLeft = this.player.dashCd - (t - this.player.lastDashTime);
     const lines = [];
-    lines.push(`[${this.difficulty.name}]  HP: ${this.player.hp}/${this.player.maxHp}  |  Marks: ${this.player.score}`);
+    lines.push(`[${this.difficulty.name}]  HP: ${this.player.hp}/${this.player.maxHp}  |  Marks: ${this.player.score}  |  Kills: ${this.player.kills}`);
     if (this.touchMode) {
       lines.push("TOUCH — L: move | R: aim+fire | Tap icons for skills");
     } else {
-      lines.push("[LMB] Fire | [E/RMB] Rockets | [C] Beam | [Q] Shield | [F] Strike | [R] Restart");
-      lines.push(`[Space] Dash: ${dsLeft <= 0 ? "READY" : dsLeft.toFixed(1) + "s"}`);
+      lines.push("[LMB]Fire [E]Rocket [C]Beam [Q]Shield [F]Strike [R]Lockon [G]Fake [H]Help");
+      lines.push(`[Space]Dash: ${dsLeft <= 0 ? "READY" : dsLeft.toFixed(1) + "s"}`);
     }
     ctx.fillStyle = "#e0e0e0"; ctx.font = "13px Helvetica";
     ctx.textAlign = "left"; ctx.textBaseline = "top";
     lines.forEach((line, i) => ctx.fillText(line, 12, 12 + i * 20));
   }
 
-  // --- Select screens ---
   drawControlSelect() {
     this.buttons = [];
     ctx.textAlign = "center";
@@ -1180,7 +1812,8 @@ class Game {
     const bw = Math.min(320, W * 0.36), bh = 100;
     const kbX = W / 2 - bw - 30, kbY = 230;
     this.drawChoiceBox(kbX, kbY, bw, bh, "#ff2e63", "KEYBOARD + MOUSE",
-      ["WASD / Space — move & dash", "Left Click fire · E rocket", "C beam · Q shield · F strike · R restart"]);
+      ["WASD / Space — move & dash", "Left Click fire · E rocket",
+       "C beam · Q shield · F strike · R lockon · G fake · H help"]);
     this.buttons.push({ x: kbX, y: kbY, w: bw, h: bh,
       action: () => { this.touchMode = false; this.state = "difficulty"; } });
 
@@ -1226,7 +1859,6 @@ class Game {
         action: () => this.startGame(this.touchMode, key) });
     });
 
-    // Shop button
     const shopW = 220, shopH = 60;
     const shopX = (W - shopW) / 2;
     const shopY = startY + bh + 30;
@@ -1238,9 +1870,6 @@ class Game {
     ctx.fillText("Exchange marks for skills", shopX + shopW / 2, shopY + 48);
     this.buttons.push({ x: shopX, y: shopY, w: shopW, h: shopH,
       action: () => { this.state = "shop"; } });
-
-    ctx.fillStyle = "#444"; ctx.font = "12px Helvetica";
-    ctx.fillText("Tap a difficulty to begin, or visit the shop.", W / 2, H - 25);
   }
 
   drawDifficultyBox(x, y, w, h, d) {
@@ -1259,47 +1888,60 @@ class Game {
     this.buttons = [];
     ctx.textAlign = "center";
     ctx.fillStyle = "#c77dff"; ctx.font = "bold 30px Helvetica";
-    ctx.fillText("SHOP", W / 2, 60);
+    ctx.fillText("SHOP", W / 2, 50);
     ctx.fillStyle = "#aaa"; ctx.font = "14px Helvetica";
-    ctx.fillText(`Marks: ${this.marks}`, W / 2, 88);
+    ctx.fillText(`Marks: ${this.marks}  |  Equipped: ${this.equippedSkills.length}/${MAX_EQUIPPED}`, W / 2, 76);
 
-    // Two skill cards
-    const keys = ["shield", "strike"];
-    const gap = 30;
-    const bw = Math.min(300, W * 0.42);
-    const bh = Math.min(240, H * 0.42);
-    const totalW = bw * 2 + gap;
+    const keys = ["shield", "strike", "lockon", "fake", "help"];
+    const gap = 14;
+    const marginX = Math.max(12, W * 0.02);
+    const usable = W - marginX * 2 - gap * 4;
+    const bw = Math.min(170, usable / 5);
+    const bh = Math.min(260, H * 0.5);
+    const totalW = bw * 5 + gap * 4;
     const startX = (W - totalW) / 2;
-    const startY = Math.min(H * 0.22, 130);
+    const startY = Math.min(H * 0.22, 100);
 
     keys.forEach((key, idx) => {
       const s = SKILLS[key];
       const x = startX + idx * (bw + gap);
       const owned = this.ownedSkills[key];
+      const equipped = this.equippedSkills.includes(key);
       const canAfford = this.marks >= s.cost;
 
-      ctx.fillStyle = owned ? "#1a3a2a" : "#15152a";
+      ctx.fillStyle = equipped ? "#1a3a2a" : (owned ? "#1a2a3a" : "#15152a");
       ctx.fillRect(x, startY, bw, bh);
-      ctx.strokeStyle = owned ? "#06d6a0" : "#c77dff";
+      ctx.strokeStyle = equipped ? "#06d6a0" : (owned ? "#00fff5" : "#c77dff");
       ctx.lineWidth = 3; ctx.strokeRect(x, startY, bw, bh);
 
-      ctx.fillStyle = "#c77dff"; ctx.font = "bold 22px Helvetica";
-      ctx.fillText(s.name, x + bw / 2, startY + 40);
-      ctx.fillStyle = "#aaa"; ctx.font = "12px Helvetica";
-      ctx.fillText(s.subtitle, x + bw / 2, startY + 62);
+      this.drawSkillIcon(x + bw / 2, startY + 70, 35, key);
 
-      ctx.fillStyle = "#ccc"; ctx.font = "11px Helvetica";
-      const lines = this.wrapText(s.desc, bw - 30);
-      lines.forEach((line, i) => ctx.fillText(line, x + bw / 2, startY + 90 + i * 16));
+      ctx.fillStyle = "#c77dff"; ctx.font = "bold 16px Helvetica";
+      ctx.fillText(s.name, x + bw / 2, startY + bh - 90);
 
-      // Price / status
       if (owned) {
-        ctx.fillStyle = "#06d6a0"; ctx.font = "bold 16px Helvetica";
-        ctx.fillText("✓ OWNED", x + bw / 2, startY + bh - 30);
+        if (equipped) {
+          ctx.fillStyle = "#06d6a0"; ctx.font = "bold 12px Helvetica";
+          ctx.fillText("✓ EQUIPPED", x + bw / 2, startY + bh - 60);
+          ctx.fillStyle = "#888"; ctx.font = "10px Helvetica";
+          ctx.fillText("tap to unequip", x + bw / 2, startY + bh - 45);
+          this.buttons.push({ x, y: startY, w: bw, h: bh,
+            action: () => {
+              this.equippedSkills = this.equippedSkills.filter(k => k !== key);
+            }});
+        } else {
+          ctx.fillStyle = "#00fff5"; ctx.font = "bold 12px Helvetica";
+          ctx.fillText("TAP TO EQUIP", x + bw / 2, startY + bh - 60);
+          this.buttons.push({ x, y: startY, w: bw, h: bh,
+            action: () => {
+              if (this.equippedSkills.length >= MAX_EQUIPPED) return;
+              this.equippedSkills.push(key);
+            }});
+        }
       } else {
         ctx.fillStyle = canAfford ? "#ffd166" : "#666";
-        ctx.font = "bold 16px Helvetica";
-        ctx.fillText(`Buy — ${s.cost} marks`, x + bw / 2, startY + bh - 30);
+        ctx.font = "bold 13px Helvetica";
+        ctx.fillText(`Buy — ${s.cost}`, x + bw / 2, startY + bh - 60);
         if (canAfford) {
           this.buttons.push({ x, y: startY, w: bw, h: bh,
             action: () => {
@@ -1312,16 +1954,63 @@ class Game {
       }
     });
 
-    // Back button
-    const backW = 180, backH = 55;
+    if (this.equippedSkills.length >= MAX_EQUIPPED) {
+      ctx.fillStyle = "#ff9f1c"; ctx.font = "12px Helvetica";
+      ctx.fillText("Max equipped — unequip a skill to equip another", W / 2, startY + bh + 15);
+    }
+
+    const backW = 180, backH = 50;
     const backX = (W - backW) / 2;
-    const backY = startY + bh + 30;
+    const backY = startY + bh + 40;
     ctx.fillStyle = "#1a1a2e"; ctx.fillRect(backX, backY, backW, backH);
     ctx.strokeStyle = "#ff2e63"; ctx.lineWidth = 2; ctx.strokeRect(backX, backY, backW, backH);
     ctx.fillStyle = "#ff2e63"; ctx.font = "bold 16px Helvetica";
-    ctx.fillText("← BACK", backX + backW / 2, backY + 34);
+    ctx.fillText("← BACK", backX + backW / 2, backY + 32);
     this.buttons.push({ x: backX, y: backY, w: backW, h: backH,
       action: () => { this.state = "difficulty"; } });
+  }
+
+  drawSkillIcon(cx, cy, r, key) {
+    ctx.save();
+    ctx.strokeStyle = "#dddddd"; ctx.fillStyle = "#dddddd"; ctx.lineWidth = 3;
+    const s = r;
+    if (key === "shield") {
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - s);
+      ctx.lineTo(cx + s * 0.7, cy - s * 0.4);
+      ctx.lineTo(cx + s * 0.6, cy + s * 0.4);
+      ctx.lineTo(cx, cy + s);
+      ctx.lineTo(cx - s * 0.6, cy + s * 0.4);
+      ctx.lineTo(cx - s * 0.7, cy - s * 0.4);
+      ctx.closePath(); ctx.fill();
+    } else if (key === "strike") {
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - s);
+      ctx.lineTo(cx + s * 0.4, cy);
+      ctx.lineTo(cx, cy + s);
+      ctx.lineTo(cx - s * 0.4, cy);
+      ctx.closePath(); ctx.fill();
+    } else if (key === "lockon") {
+      ctx.beginPath(); ctx.arc(cx, cy, s * 0.7, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(cx, cy, s * 0.3, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(cx - s * 1.2, cy); ctx.lineTo(cx - s * 0.6, cy);
+      ctx.moveTo(cx + s * 1.2, cy); ctx.lineTo(cx + s * 0.6, cy);
+      ctx.moveTo(cx, cy - s * 1.2); ctx.lineTo(cx, cy - s * 0.6);
+      ctx.moveTo(cx, cy + s * 1.2); ctx.lineTo(cx, cy + s * 0.6);
+      ctx.stroke();
+    } else if (key === "fake") {
+      ctx.beginPath(); ctx.arc(cx, cy, s, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(cx, cy, s * 0.55, 0, Math.PI * 2); ctx.stroke();
+    } else if (key === "help") {
+      for (let i = 0; i < 3; i++) {
+        const a = i * Math.PI * 2 / 3 - Math.PI / 2;
+        const px = cx + Math.cos(a) * s * 0.6;
+        const py = cy + Math.sin(a) * s * 0.6;
+        ctx.beginPath(); ctx.arc(px, py, s * 0.25, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    ctx.restore();
   }
 
   wrapText(text, maxWidth) {
