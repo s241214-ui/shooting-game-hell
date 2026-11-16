@@ -124,10 +124,6 @@ class StrongBullet {
   }
 }
 
-/*
-  Rocket: dark blue triangle, travels STRAIGHT to red's LOCKED position
-  at fire time (no homing). Explodes on 2s or on edge.
-*/
 class Rocket {
   constructor(x, y, target, speed = 6.5, color = "#1a3a8a", fromHelper = false) {
     this.x = x; this.y = y;
@@ -137,7 +133,6 @@ class Rocket {
     this.spawnTime = now();
     this.lifetime = 2.5;
     this.active = true;
-    // Lock in red's CURRENT position — no tracking after this
     this.angle = target ? Math.atan2(target.y - y, target.x - x) : 0;
     this.damage = 1;
     this.fromHelper = fromHelper;
@@ -198,6 +193,10 @@ class PlayerRed {
     this.fakeAbsorbed = 0;
     this.fakeOrbsAngle = 0;
     this.fakeMode = "follow";
+    // Fake attack-mode: two orbs become travelling shooters
+    this.fakeOrbPositions = [null, null];
+    this.fakeOrbTargets = [null, null];
+    this.fakeOrbLastShoot = 0;
 
     this.helpActive = false;
     this.helpStart = 0;
@@ -281,6 +280,16 @@ class PlayerRed {
     this.strikeLastUsed = now();
     this.strikeTrail = [];
   }
+  // Called by Yellow when yellow's crash hits red while red is also crashing
+  startCrashBounce(fromX, fromY) {
+    const dx = this.x - fromX, dy = this.y - fromY;
+    const d = Math.hypot(dx, dy) || 1;
+    this.x += (dx / d) * 120;
+    this.y += (dy / d) * 120;
+    this.x = Math.max(this.radius, Math.min(W - this.radius, this.x));
+    this.y = Math.max(this.radius, Math.min(H - this.radius, this.y));
+  }
+
   activateLockon() {
     const t = now();
     if (!this.hasSkill("lockon")) return;
@@ -324,7 +333,11 @@ class PlayerRed {
     this.fakeActive = true;
     this.fakeStart = t;
     this.fakeAbsorbed = 0;
+    // 50/50 random between "follow" and "attack" modes
     this.fakeMode = Math.random() < 0.5 ? "follow" : "attack";
+    this.fakeOrbPositions = [null, null];
+    this.fakeOrbTargets = [null, null];
+    this.fakeOrbLastShoot = 0;
     this.damageTakenThisLife = 0;
   }
   activateHelp() {
@@ -373,6 +386,58 @@ class PlayerRed {
     if (!this.fakeActive) return;
     const t = now();
     this.fakeOrbsAngle += 0.1;
+
+    // For "attack" mode, the two orbs travel to enemies and shoot independently
+    if (this.fakeMode === "attack") {
+      for (let i = 0; i < 2; i++) {
+        let pos = this.fakeOrbPositions[i];
+        if (!pos) {
+          pos = {
+            x: this.x + Math.cos(this.fakeOrbsAngle + i * Math.PI) * (this.player?.radius || 20),
+            y: this.y + Math.sin(this.fakeOrbsAngle + i * Math.PI) * (this.player?.radius || 20),
+          };
+          this.fakeOrbPositions[i] = pos;
+        }
+        // Pick a target if none
+        if (!this.fakeOrbTargets[i] || !this.fakeOrbTargets[i].isAlive) {
+          const alive = game.enemies.filter(e => e.isAlive);
+          this.fakeOrbTargets[i] = alive.length ? alive[Math.floor(Math.random() * alive.length)] : null;
+        }
+        const tgt = this.fakeOrbTargets[i];
+        if (tgt) {
+          // Fly toward the target
+          const dx = tgt.x - pos.x, dy = tgt.y - pos.y;
+          const d = Math.hypot(dx, dy) || 1;
+          if (d > 40) {
+            pos.x += (dx / d) * 4.5;
+            pos.y += (dy / d) * 4.5;
+          }
+        }
+      }
+
+      // Shoot independently — each shoot changes position
+      if (t - this.fakeOrbLastShoot > 0.5) {
+        this.fakeOrbLastShoot = t;
+        for (let i = 0; i < 2; i++) {
+          const pos = this.fakeOrbPositions[i];
+          const tgt = this.fakeOrbTargets[i];
+          if (pos && tgt && tgt.isAlive) {
+            const ang = Math.atan2(tgt.y - pos.y, tgt.x - pos.x);
+            const b = new Bullet(pos.x, pos.y, ang, 11, 4, "#c77dff", false);
+            b.fromHelper = true;
+            b.damageMult = 0.5;
+            game.redBullets.push(b);
+            // Change position after each shoot
+            this.fakeOrbPositions[i] = {
+              x: this.x + Math.cos(this.fakeOrbsAngle * 2 + i * Math.PI * 1.4) * 80,
+              y: this.y + Math.sin(this.fakeOrbsAngle * 2 + i * Math.PI * 1.4) * 80,
+            };
+            this.fakeOrbTargets[i] = null;
+          }
+        }
+      }
+    }
+
     if (t - this.fakeStart >= this.fakeDuration) {
       const diff = game.difficultyKey;
       const mult = (diff === "master" || diff === "hell") ? 0.5 : 1.0;
@@ -381,6 +446,8 @@ class PlayerRed {
       this.fakeActive = false;
       this.fakeLastUsed = t;
       this.fakeAbsorbed = 0;
+      this.fakeOrbPositions = [null, null];
+      this.fakeOrbTargets = [null, null];
       this.takeMandatoryDamage(1);
     }
   }
@@ -414,7 +481,7 @@ class PlayerRed {
   }
 }
 
-// ===================== HELPER (grey, free-moving, random skills, 1/2 damage) =====================
+// ===================== HELPER (grey) =====================
 class Helper {
   constructor(x, y, equipped) {
     this.x = x; this.y = y;
@@ -422,7 +489,7 @@ class Helper {
     this.baseSpeed = 5.0 * SPEED_MULT;
     this.angle = 0;
     this.equipped = equipped;
-    this.maxHp = 25;      // Grey can be destroyed — 25 HP
+    this.maxHp = 25;
     this.hp = 25;
     this.isAlive = true;
     this.lastShot = 0;
@@ -433,8 +500,11 @@ class Helper {
     this.roamAngle = Math.random() * Math.PI * 2;
     this.roamTimer = 0;
     this.skillTimer = Math.random() * 2;
+    this.isStriking = false;
+    this.strikeDir = [1, 0];
   }
   takeDamage(n) {
+    if (this.isStriking) return;
     if (this.shieldHp > 0) {
       const absorbed = Math.min(this.shieldHp, n);
       this.shieldHp -= absorbed;
@@ -454,9 +524,6 @@ class Helper {
       this.roamAngle = Math.random() * Math.PI * 2;
       this.roamTimer = 1 + Math.random() * 2;
     }
-    // Free movement — drift toward red's vicinity but not strictly attached
-    const dx = target.x - this.x, dy = target.y - this.y;
-    const d = Math.hypot(dx, dy) || 1;
     const orbitX = target.x + Math.cos(this.roamAngle) * 140;
     const orbitY = target.y + Math.sin(this.roamAngle) * 140;
     const ox = orbitX - this.x, oy = orbitY - this.y;
@@ -521,16 +588,20 @@ class Helper {
   }
 }
 
-// ===================== YELLOW (new, complex AI) =====================
+// ===================== YELLOW (new behavior) =====================
 /*
   Yellow behavior:
-  1. RAPID FIRE — fires single bullets at red continuously like red does
-  2. POWER SHOT — after rapid-fire phase, charges then fires a big shot.
-     Warning shown before. Yellow moves and aims while using it.
-  3. CRASH — dash to red (unchanged, faster aim), yellow crash ends at edge
-  4. DODGE — actively dodges red power shot, fake, and rockets.
-     Uses its own "crash" to bounce away, with an "eject" interaction.
-  HP: 77 (35 * 2.2) — needs many hits to kill.
+  - AIM 0.3s: brief aiming phase.
+  - RAPID FIRE 3s (0.1s per bullet): 30 bullets, red-like rapid fire.
+  - STRONG SHOT: fires one piercing heavy shot after rapid phase.
+  - Crash: dashes toward red at 5x speed to edge, with white shadow trail.
+  - If crash touches red (or grey) while red is ALSO crashing → both bounce.
+    If crash touches red (or grey) but target is NOT crashing → red takes damage,
+    yellow takes NO damage and does NOT bounce.
+  - Tough movement:
+    (a) Detect being aimed at for long time → speed boost for 3s
+    (b) Sudden sidestep (left/right) to dodge
+    (c) Sudden dash through red
 */
 class YellowTriangle {
   constructor(x, y, hp = 77) {
@@ -541,17 +612,18 @@ class YellowTriangle {
     this.maxHp = hp; this.hp = hp; this.isAlive = true;
     this.preferredDistance = 260;
 
-    // Shooting phase
-    this.attackMode = "rapid";  // rapid | power_charge | power_fire | crash
-    this.modeTimer = now() + 1.0;
+    // Attack phases
+    this.attackMode = "aim";   // aim -> rapid -> power -> maybe crash
+    this.modeTimer = 0;
+    this.aimDuration = 0.3;
     this.rapidShootTimer = 0;
-    this.rapidShootInterval = 0.4;  // bullet fire
-    this.rapidDuration = 3.0;       // how long to rapid fire before power shot
+    this.rapidShootInterval = 0.1;   // 0.1s per bullet
+    this.rapidDuration = 3.0;
     this.rapidShootStarted = 0;
 
     // Power shot
     this.powerChargeStart = 0;
-    this.powerChargeDuration = 1.5; // warning period
+    this.powerChargeDuration = 1.0;
     this.powerShootDone = false;
 
     // Crash
@@ -567,16 +639,16 @@ class YellowTriangle {
     this.isDodging = false;
     this.dodgeDir = [0, 0];
     this.dodgeStart = 0;
-    this.dodgeDuration = 0.5;
+    this.dodgeDuration = 0.35;
     this.dodgeCooldown = 0;
 
-    // Bounce (when red/yellow crash collide)
-    this.bounceActive = false;
-    this.bounceStart = 0;
-    this.bounceFrom = [0, 0];
-    this.bounceTo = [0, 0];
-    this.bounceDuration = 0.35;
-    this.crashTarget = null;  // grey helper targeted during crash
+    // Aim detection — track how long red has been aiming at this yellow
+    this.aimedAtDuration = 0;
+    this.beingAimedAt = false;
+    this.speedBoostUntil = 0;
+
+    // Sidestep
+    this.sidestepCooldown = 0;
 
     this.canShoot = true;
   }
@@ -585,7 +657,6 @@ class YellowTriangle {
     if (this.hp <= 0) { this.hp = 0; this.isAlive = false; }
   }
 
-  // Attempt to dodge an incoming threat
   tryDodge(threatX, threatY) {
     const t = now();
     if (t < this.dodgeCooldown) return false;
@@ -600,6 +671,36 @@ class YellowTriangle {
     return true;
   }
 
+  trySidestep() {
+    const t = now();
+    if (t < this.sidestepCooldown) return;
+    if (this.isDodging || this.isDashing || this.isCharging) return;
+    // 50/50 left or right
+    const side = Math.random() < 0.5 ? 1 : -1;
+    const px = -Math.sin(this.angle) * side;
+    const py =  Math.cos(this.angle) * side;
+    this.dodgeDir = [px, py];
+    this.isDodging = true;
+    this.dodgeStart = t;
+    this.dodgeDuration = 0.4;
+    this.dodgeCooldown = t + 1.2;
+    this.sidestepCooldown = t + 3.5;
+  }
+
+  tryDashThroughRed(redX, redY) {
+    const t = now();
+    if (t < this.sidestepCooldown) return;
+    if (this.isDodging || this.isDashing || this.isCharging) return;
+    const dx = redX - this.x, dy = redY - this.y;
+    const d = Math.hypot(dx, dy) || 1;
+    this.dodgeDir = [dx / d, dy / d];
+    this.isDodging = true;
+    this.dodgeStart = t;
+    this.dodgeDuration = 0.3;
+    this.dodgeCooldown = t + 1.0;
+    this.sidestepCooldown = t + 4.0;
+  }
+
   triggerCrash(target) {
     if (this.isCharging || this.isDashing) return;
     this.attackMode = "crash";
@@ -611,16 +712,6 @@ class YellowTriangle {
     this.dashMaxDist = Math.max(W, H) * 1.5;
     this.dashTravelled = 0;
     this.dashHitDone = false;
-    // Prefer targeting a grey helper if any
-    const helpers = game.player.helpActive ? game.player.helpers.filter(h => h.isAlive) : [];
-    if (helpers.length) {
-      let nearest = helpers[0], nd = Infinity;
-      for (const h of helpers) {
-        const dd = Math.hypot(h.x - this.x, h.y - this.y);
-        if (dd < nd) { nd = dd; nearest = h; }
-      }
-      this.crashTarget = nearest;
-    }
   }
 
   updateDash(target) {
@@ -633,24 +724,43 @@ class YellowTriangle {
       this.y += this.dashDir[1] * sp;
       this.dashTravelled += sp;
 
-      // Damage any grey first
+      // Check helpers first
       if (game.player.helpActive) {
         for (const h of game.player.helpers) {
           if (h.isAlive && Math.hypot(h.x - this.x, h.y - this.y) < this.radius + h.radius) {
-            h.takeDamage(10);
-            this.dashHitDone = true;
+            // If helper is also crashing, both bounce
+            if (h.isStriking) {
+              h.isStriking = false;
+              h.x -= this.dashDir[0] * 100;
+              h.y -= this.dashDir[1] * 100;
+              h.x = Math.max(h.radius, Math.min(W - h.radius, h.x));
+              h.y = Math.max(h.radius, Math.min(H - h.radius, h.y));
+              this.startBounce();
+              this.dashHitDone = true;
+            } else {
+              // Yellow just damages grey — no bounce
+              h.takeDamage(10);
+              this.dashHitDone = true;
+            }
           }
         }
       }
 
+      // Check red
       if (!this.dashHitDone && target.isAlive &&
           Math.hypot(target.x - this.x, target.y - this.y) < this.radius + target.radius) {
-        target.takeDamage(5);
-        this.dashHitDone = true;
-        // Both bounce — red and yellow return to pre-crash positions
-        this.startBounce();
-        target.startCrashBounce(this.x, this.y);
+        if (target.isStriking) {
+          // Both crashing → both bounce
+          target.startCrashBounce(this.x, this.y);
+          this.startBounce();
+          this.dashHitDone = true;
+        } else {
+          // Red not crashing → red takes damage, yellow does NOT bounce
+          target.takeDamage(5);
+          this.dashHitDone = true;
+        }
       }
+
       if (this.x < this.radius || this.x > W - this.radius ||
           this.y < this.radius || this.y > H - this.radius ||
           this.dashTravelled >= this.dashMaxDist) {
@@ -659,37 +769,26 @@ class YellowTriangle {
         this.x = Math.max(this.radius, Math.min(W - this.radius, this.x));
         this.y = Math.max(this.radius, Math.min(H - this.radius, this.y));
         this.crashCooldownUntil = now() + 4;
-        this.attackMode = "rapid";
-        this.rapidShootStarted = now();
+        this.attackMode = "aim";
+        this.aimDuration = 0.3;
+        this.modeTimer = now() + this.aimDuration;
       }
     }
   }
 
   startBounce() {
-    this.bounceActive = true;
-    this.bounceStart = now();
-    this.bounceFrom = [this.x, this.y];
-    // Bounce back 200px opposite to crash direction
-    this.bounceTo = [
-      Math.max(this.radius, Math.min(W - this.radius, this.x - this.dashDir[0] * 200)),
-      Math.max(this.radius, Math.min(H - this.radius, this.y - this.dashDir[1] * 200))
-    ];
     this.isDashing = false;
     this.isCharging = false;
-  }
-
-  updateBounce() {
-    if (!this.bounceActive) return;
-    const elapsed = now() - this.bounceStart;
-    const f = Math.min(1, elapsed / this.bounceDuration);
-    this.x = this.bounceFrom[0] + (this.bounceTo[0] - this.bounceFrom[0]) * f;
-    this.y = this.bounceFrom[1] + (this.bounceTo[1] - this.bounceFrom[1]) * f;
-    if (f >= 1) {
-      this.bounceActive = false;
-      this.attackMode = "rapid";
-      this.rapidShootStarted = now();
-      this.crashCooldownUntil = now() + 3;
-    }
+    // Nudge back
+    this.x -= this.dashDir[0] * 150;
+    this.y -= this.dashDir[1] * 150;
+    this.x = Math.max(this.radius, Math.min(W - this.radius, this.x));
+    this.y = Math.max(this.radius, Math.min(H - this.radius, this.y));
+    this.trail = [];
+    this.attackMode = "aim";
+    this.aimDuration = 0.3;
+    this.modeTimer = now() + this.aimDuration;
+    this.crashCooldownUntil = now() + 3;
   }
 
   update(target, enemyBullets) {
@@ -699,18 +798,12 @@ class YellowTriangle {
     const dist = Math.hypot(dx, dy) || 1;
     this.angle = Math.atan2(dy, dx);
 
-    // Bounce
-    if (this.bounceActive) {
-      this.updateBounce();
-      return;
-    }
-
     // Dodge
     if (this.isDodging) {
       const f = (t - this.dodgeStart) / this.dodgeDuration;
       if (f >= 1) this.isDodging = false;
       else {
-        const sp = this.baseSpeed * 2.5;
+        const sp = this.baseSpeed * 3;
         this.x += this.dodgeDir[0] * sp;
         this.y += this.dodgeDir[1] * sp;
         this.x = Math.max(this.radius, Math.min(W - this.radius, this.x));
@@ -719,7 +812,7 @@ class YellowTriangle {
       }
     }
 
-    // Crash state
+    // Crash
     if (this.isCharging || this.isDashing) {
       this.trail.push({ x: this.x, y: this.y, a: this.angle, life: 0.35 });
       for (const tr of this.trail) tr.life -= 0.03;
@@ -728,8 +821,25 @@ class YellowTriangle {
       return;
     }
 
-    // Movement — stay at preferred distance / orbit
-    const speed = this.baseSpeed;
+    // Movement — track aim, boost speed, sidestep and dash-through
+    let speed = this.baseSpeed;
+    if (t < this.speedBoostUntil) speed *= 1.8;
+
+    // Being aimed at for a long time → boost speed for 3s
+    if (this.beingAimedAt) {
+      this.aimedAtDuration += 0.016;
+      if (this.aimedAtDuration > 1.2 && t > this.speedBoostUntil) {
+        this.speedBoostUntil = t + 3.0;
+        this.aimedAtDuration = 0;
+      }
+    } else {
+      this.aimedAtDuration = Math.max(0, this.aimedAtDuration - 0.02);
+    }
+
+    // Random sidestep chance
+    if (dist < 400 && Math.random() < 0.01) this.trySidestep();
+    if (dist < 250 && Math.random() < 0.008) this.tryDashThroughRed(target.x, target.y);
+
     if (dist < this.preferredDistance - 25) {
       this.x -= (dx / dist) * speed * 0.6;
       this.y -= (dy / dist) * speed * 0.6;
@@ -742,34 +852,38 @@ class YellowTriangle {
       this.y += py * speed * 0.5;
     }
 
-    // Attack loop
-    if (this.attackMode === "rapid") {
-      // Rapid fire
+    // Attack cycle
+    if (this.attackMode === "aim") {
+      if (t >= this.modeTimer) {
+        this.attackMode = "rapid";
+        this.rapidShootStarted = t;
+        this.rapidShootTimer = t;
+      }
+    } else if (this.attackMode === "rapid") {
       if (t - this.rapidShootStarted > this.rapidDuration) {
-        this.attackMode = "power_charge";
+        this.attackMode = "power";
         this.powerChargeStart = t;
         this.powerShootDone = false;
       } else if (this.canShoot && t - this.rapidShootTimer >= this.rapidShootInterval) {
         this.rapidShootTimer = t;
         enemyBullets.push(new Bullet(this.x, this.y, this.angle, 11, 6, "#ffe66d"));
       }
-    } else if (this.attackMode === "power_charge") {
-      // Charge warning — moves and aims while doing this
+    } else if (this.attackMode === "power") {
       if (t - this.powerChargeStart >= this.powerChargeDuration) {
-        // Fire big shot
         const b = new Bullet(this.x, this.y, this.angle, 22, 12, "#ffffff", true);
         b.damageMult = 2;
         enemyBullets.push(b);
         this.powerShootDone = true;
-        // Occasionally crash after power shot
-        if (t > this.crashCooldownUntil && Math.random() < 0.4) {
+        if (t > this.crashCooldownUntil && Math.random() < 0.5) {
           this.triggerCrash(target);
         } else {
-          this.attackMode = "rapid";
-          this.rapidShootStarted = t;
+          this.attackMode = "aim";
+          this.aimDuration = 0.3;
+          this.modeTimer = t + this.aimDuration;
         }
       }
     }
+    // Crash is handled by triggerCrash, which changes attackMode
 
     this.x = Math.max(this.radius, Math.min(W - this.radius, this.x));
     this.y = Math.max(this.radius, Math.min(H - this.radius, this.y));
@@ -783,8 +897,7 @@ class YellowTriangle {
     ctx.globalAlpha = 1;
 
     let color = "#f9d56e";
-    if (this.attackMode === "power_charge") {
-      // Warning: flashing
+    if (this.attackMode === "power") {
       color = (Math.floor(now() * 15) % 2 === 0) ? "#ffddaa" : "#ff8800";
     } else if (this.isDodging) {
       color = "#aaffaa";
@@ -792,6 +905,8 @@ class YellowTriangle {
       color = (Math.floor(now() * 20) % 2 === 0) ? "#ffffff" : "#ffdddd";
     } else if (this.isDashing) {
       color = "#ff5500";
+    } else if (now() < this.speedBoostUntil) {
+      color = "#ffee88";
     }
 
     drawTri(this.x, this.y, this.radius, this.angle, color);
@@ -805,8 +920,7 @@ class YellowTriangle {
                  this.y + this.dashDir[1] * 400);
       ctx.stroke(); ctx.setLineDash([]);
     }
-    if (this.attackMode === "power_charge") {
-      // Warning circle
+    if (this.attackMode === "power") {
       const f = (now() - this.powerChargeStart) / this.powerChargeDuration;
       ctx.strokeStyle = `rgba(255,80,0,${0.4 + 0.6 * f})`;
       ctx.lineWidth = 3;
@@ -816,7 +930,7 @@ class YellowTriangle {
   }
 }
 
-// ===================== PURPLE (unchanged) =====================
+// ===================== PURPLE =====================
 class PurpleTriangle {
   constructor(x, y) {
     this.x = x; this.y = y;
@@ -860,7 +974,7 @@ class PurpleTriangle {
   }
 }
 
-// ===================== GREEN (merged; rockets dark blue straight-line) =====================
+// ===================== GREEN =====================
 class GreenTriangle {
   constructor(x, y) {
     this.x = x; this.y = y;
@@ -901,7 +1015,6 @@ class GreenTriangle {
       if (t >= this.fireCooldown) {
         for (let i = 0; i < 7; i++) {
           if (enemyRockets.length < 30) {
-            // Dark blue straight-line rockets — target red's CURRENT position (locks in)
             enemyRockets.push(new Rocket(this.x, this.y, target, 6.5, "#1a3a8a"));
           }
         }
@@ -960,7 +1073,7 @@ class GreenTriangle {
   }
 }
 
-// ===================== DIFFICULTY (enemy counts reduced) =====================
+// ===================== DIFFICULTY =====================
 const DIFFICULTIES = {
   news: {
     name: "NEWS", subtitle: "新闻 · 轻松入门", color: "#06d6a0",
@@ -1365,7 +1478,6 @@ class Game {
           h.update(this.player, this.enemies, this.redBullets, this.redRockets);
           if (h.isAlive) allDead = false;
         }
-        // All greys destroyed → start cooldown
         if (allDead) {
           this.player.helpActive = false;
           this.player.helpLastUsed = t;
@@ -1383,28 +1495,33 @@ class Game {
       }
     }
 
-    // Yellow shoot slot: only 5 can shoot
     const yellows = this.enemies.filter(e => e instanceof YellowTriangle && e.isAlive);
     const yellowsToShoot = yellows.slice(0, 5);
     for (const y of yellows) y.canShoot = yellowsToShoot.includes(y);
 
-    // Enemies
+    // Aim detection for Yellows: if player aims within 10 deg of a yellow for >1.2s → boost
+    for (const y of yellows) {
+      const ang = Math.atan2(y.y - this.player.y, y.x - this.player.x);
+      let diff = ang - aimAngle;
+      while (diff >  Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      y.beingAimedAt = Math.abs(diff) < 0.18;
+    }
+
     const newEnemies = [];
     for (const e of this.enemies) {
       if (e instanceof YellowTriangle)    e.update(this.player, this.enemyBullets);
       else if (e instanceof GreenTriangle) e.update(this.player, this.enemyRockets);
       else                                 e.update(this.player, this.enemyBullets);
 
-      // Yellow dodge logic: react to incoming projectiles
       if (e instanceof YellowTriangle && e.isAlive) {
-        // Dodge red power shot
+        // Dodge incoming
         for (const sb of this.redStrongBullets) {
           if (sb.active && Math.hypot(sb.x - e.x, sb.y - e.y) < 200) {
             e.tryDodge(sb.x, sb.y);
             break;
           }
         }
-        // Dodge red rockets
         if (!e.isDodging) {
           for (const r of this.redRockets) {
             if (r.active && Math.hypot(r.x - e.x, r.y - e.y) < 140) {
@@ -1413,7 +1530,6 @@ class Game {
             }
           }
         }
-        // Dodge fake orbs bullets (they are red bullets, from helpers only matter in 2 attack modes)
         if (!e.isDodging && this.player.fakeActive) {
           for (const b of this.redBullets) {
             if (b.active && Math.hypot(b.x - e.x, b.y - e.y) < 120) {
@@ -1440,44 +1556,23 @@ class Game {
     for (const b of this.enemyBullets)     b.update();
     for (const r of this.enemyRockets)     r.update();
 
-    // Fake orbs: two attack modes
-    if (this.player.fakeActive) {
-      if (this.player.fakeMode === "follow") {
-        // Fire in same direction as red
-        if (t - (this.player.lastFakeOrbShot || 0) > 0.3) {
-          this.player.lastFakeOrbShot = t;
-          const rr = this.player.radius + 20;
-          for (let i = 0; i < 2; i++) {
-            const a = this.player.fakeOrbsAngle + i * Math.PI;
-            const ox = this.player.x + Math.cos(a) * rr;
-            const oy = this.player.y + Math.sin(a) * rr;
-            const b = new Bullet(ox, oy, aimAngle, 11, 4, "#c77dff", false);
-            b.fromHelper = true;
-            b.damageMult = 0.5;
-            this.redBullets.push(b);
-          }
-        }
-      } else {
-        // Fire at enemies in different angles
-        if (t - (this.player.lastFakeOrbShot || 0) > 0.3) {
-          this.player.lastFakeOrbShot = t;
-          const rr = this.player.radius + 20;
-          const alive = this.enemies.filter(e => e.isAlive);
-          for (let i = 0; i < 2; i++) {
-            const a = this.player.fakeOrbsAngle + i * Math.PI;
-            const ox = this.player.x + Math.cos(a) * rr;
-            const oy = this.player.y + Math.sin(a) * rr;
-            let target = null;
-            if (alive.length) target = alive[(i + Math.floor(Math.random() * alive.length)) % alive.length];
-            const ang = target ? Math.atan2(target.y - oy, target.x - ox) : aimAngle;
-            const b = new Bullet(ox, oy, ang, 11, 4, "#c77dff", false);
-            b.fromHelper = true;
-            b.damageMult = 0.5;
-            this.redBullets.push(b);
-          }
+    // Fake "follow" mode — orbs shoot same direction as red
+    if (this.player.fakeActive && this.player.fakeMode === "follow") {
+      if (t - (this.player.lastFakeOrbShot || 0) > 0.3) {
+        this.player.lastFakeOrbShot = t;
+        const rr = this.player.radius + 20;
+        for (let i = 0; i < 2; i++) {
+          const a = this.player.fakeOrbsAngle + i * Math.PI;
+          const ox = this.player.x + Math.cos(a) * rr;
+          const oy = this.player.y + Math.sin(a) * rr;
+          const b = new Bullet(ox, oy, aimAngle, 11, 4, "#c77dff", false);
+          b.fromHelper = true;
+          b.damageMult = 0.5;
+          this.redBullets.push(b);
         }
       }
     }
+    // Fake "attack" mode shooting is handled inside player.updateFake()
 
     // Collisions
     for (const b of this.redBullets) {
@@ -1599,13 +1694,27 @@ class Game {
       else if (this.player.shieldHp > 0) color = "#06d6a0";
 
       if (this.player.fakeActive) {
-        const r = this.player.radius + 20;
-        for (let i = 0; i < 2; i++) {
-          const a = this.player.fakeOrbsAngle + i * Math.PI;
-          const ox = this.player.x + Math.cos(a) * r;
-          const oy = this.player.y + Math.sin(a) * r;
-          ctx.strokeStyle = "#c77dff"; ctx.lineWidth = 2;
-          ctx.beginPath(); ctx.arc(ox, oy, 10, 0, Math.PI * 2); ctx.stroke();
+        if (this.player.fakeMode === "follow") {
+          // Orbs circle around red
+          const r = this.player.radius + 20;
+          for (let i = 0; i < 2; i++) {
+            const a = this.player.fakeOrbsAngle + i * Math.PI;
+            const ox = this.player.x + Math.cos(a) * r;
+            const oy = this.player.y + Math.sin(a) * r;
+            ctx.strokeStyle = "#c77dff"; ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.arc(ox, oy, 10, 0, Math.PI * 2); ctx.stroke();
+          }
+        } else {
+          // Orbs travel to enemies
+          for (let i = 0; i < 2; i++) {
+            const pos = this.player.fakeOrbPositions[i];
+            if (pos) {
+              ctx.strokeStyle = "#c77dff"; ctx.lineWidth = 2;
+              ctx.beginPath(); ctx.arc(pos.x, pos.y, 10, 0, Math.PI * 2); ctx.stroke();
+              ctx.fillStyle = "#c77dff";
+              ctx.beginPath(); ctx.arc(pos.x, pos.y, 4, 0, Math.PI * 2); ctx.fill();
+            }
+          }
         }
       }
 
