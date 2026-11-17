@@ -183,7 +183,7 @@ class PlayerRed {
     this.name = "Red";
   }
   hasSkill(key) {
-    if (this.pvpMode && (key === "fake" || key === "help")) return false;
+    if (this.pvpMode && (key === "fake" || key === "help" || key === "lockon")) return false;
     return this.equipped.includes(key);
   }
   triggerDash() {
@@ -262,6 +262,7 @@ class PlayerRed {
     this.y = Math.max(this.radius, Math.min(H - this.radius, this.y));
   }
   activateLockon() {
+    if (this.pvpMode) return;
     const t = now();
     if (!this.hasSkill("lockon")) return;
     if (t - this.lockonLastUsed < this.lockonCd) return;
@@ -291,7 +292,7 @@ class PlayerRed {
     }
   }
   getLockonTargets() {
-    if (!this.lockonActive) return [];
+    if (!this.lockonActive || this.pvpMode) return [];
     const alive = [];
     for (const e of this.lockonLocked) if (e.isAlive) alive.push(e);
     return alive;
@@ -542,7 +543,7 @@ class Helper {
   }
 }
 
-// ===================== Yellow =====================
+// ===================== 敌人 =====================
 class YellowTriangle {
   constructor(x, y, hp = 77) {
     this.x = x; this.y = y;
@@ -810,7 +811,6 @@ class YellowTriangle {
   }
 }
 
-// ===================== Purple =====================
 class PurpleTriangle {
   constructor(x, y) {
     this.x = x; this.y = y;
@@ -851,7 +851,6 @@ class PurpleTriangle {
   }
 }
 
-// ===================== Green =====================
 class GreenTriangle {
   constructor(x, y) {
     this.x = x; this.y = y;
@@ -968,7 +967,6 @@ class Net {
     this.isHost = false;
     this.roomCode = "";
     this.connections = {};
-    this.remotePlayers = {};
     this.myId = "";
     this.onPlayerJoin = null;
     this.onPlayerLeave = null;
@@ -980,11 +978,10 @@ class Net {
       this.peer = new Peer();
       this.isHost = true;
       this.peer.on('open', (id) => {
-        this.myId = id;
-        this.roomCode = id;
+        this.myId = id; this.roomCode = id;
         resolve(id);
       });
-      this.peer.on('error', reject);
+      this.peer.on('error', (err) => { reject(err); });
       this.peer.on('connection', (conn) => {
         this.connections[conn.peer] = conn;
         conn.on('data', (data) => { if (this.onData) this.onData(conn.peer, data); });
@@ -1001,22 +998,34 @@ class Net {
       if (this.peer) { try { this.peer.destroy(); } catch(e){} }
       this.peer = new Peer();
       this.isHost = false;
+      let resolved = false;
       this.peer.on('open', () => {
         this.myId = this.peer.id;
-        const conn = this.peer.connect(roomCode);
-        conn.on('open', () => {
-          this.connections[roomCode] = conn;
-          this.roomCode = roomCode;
-          conn.on('data', (data) => { if (this.onData) this.onData(roomCode, data); });
-          conn.on('close', () => {
-            delete this.connections[roomCode];
-            if (this.onPlayerLeave) this.onPlayerLeave(roomCode);
+        setTimeout(() => {
+          const conn = this.peer.connect(roomCode);
+          conn.on('open', () => {
+            if (resolved) return;
+            resolved = true;
+            this.connections[roomCode] = conn;
+            this.roomCode = roomCode;
+            conn.on('data', (data) => { if (this.onData) this.onData(roomCode, data); });
+            conn.on('close', () => {
+              delete this.connections[roomCode];
+              if (this.onPlayerLeave) this.onPlayerLeave(roomCode);
+            });
+            resolve(roomCode);
           });
-          resolve(roomCode);
-        });
-        conn.on('error', reject);
+          conn.on('error', (err) => {
+            if (!resolved) { resolved = true; reject(err); }
+          });
+        }, 1200);
       });
-      this.peer.on('error', reject);
+      this.peer.on('error', (err) => {
+        if (!resolved) { resolved = true; reject(err); }
+      });
+      setTimeout(() => {
+        if (!resolved) { resolved = true; reject(new Error("连接超时：房主可能不在线或网络不通")); }
+      }, 15000);
     });
   }
   broadcast(msg) {
@@ -1033,7 +1042,6 @@ class Net {
     if (this.peer) { try { this.peer.destroy(); } catch(e){} }
     this.peer = null;
     this.connections = {};
-    this.remotePlayers = {};
   }
 }
 
@@ -1072,6 +1080,8 @@ class Game {
     this.powerShotPending = false;
     this.touches = new Map();
     this.returnToModeOnAnyInput = false;
+
+    // 联机
     this.net = new Net();
     this.roomInput = "";
     this.nameInput = "";
@@ -1079,6 +1089,18 @@ class Game {
     this.remotePlayers = {};
     this.lastSyncTime = 0;
     this._lastCrashHit = 0;
+
+    // 房间自定义
+    this.roomCustom = {
+      allowShield: true,
+      allowStrike: true,
+      allowLockon: false,
+      allowRocket: false,
+      allowFake: false,
+      allowHelp: false,
+    };
+    this.roomPlayersDead = {};
+    this.hostReturned = false;
   }
 
   setupJoysticks() {
@@ -1099,18 +1121,27 @@ class Game {
   }
 
   async createRoom() {
+    if (typeof Peer === "undefined") {
+      alert("PeerJS 未加载，请检查网络是否允许访问 unpkg.com");
+      return;
+    }
     try {
       const code = await this.net.host();
       this.roomCode = code;
       this.state = "lobby-room";
+      this.hostReturned = false;
       this.net.onPlayerJoin = (id) => { console.log("玩家加入:", id); };
       this.net.onPlayerLeave = (id) => { delete this.remotePlayers[id]; };
       this.net.onData = (fromId, data) => this.onNetData(fromId, data);
     } catch (e) {
-      alert("创建房间失败: " + e.message);
+      alert("创建房间失败: " + (e.message || e));
     }
   }
   async joinRoom() {
+    if (typeof Peer === "undefined") {
+      alert("PeerJS 未加载，请检查网络是否允许访问 unpkg.com");
+      return;
+    }
     if (!this.roomInput) { alert("请输入房间号"); return; }
     try {
       await this.net.join(this.roomInput);
@@ -1118,7 +1149,7 @@ class Game {
       this.state = "lobby-room";
       this.net.onData = (fromId, data) => this.onNetData(fromId, data);
     } catch (e) {
-      alert("加入失败: " + e.message);
+      alert("加入失败: " + (e.message || e) + "\n\n如果一直失败，可能是 PeerJS 公共服务器不稳定或网络屏蔽。");
     }
   }
 
@@ -1127,9 +1158,7 @@ class Game {
     if (data.type === "state") {
       this.remotePlayers[fromId] = data.player;
     } else if (data.type === "hit") {
-      if (this.player && this.player.isAlive) {
-        this.player.takeDamage(data.damage);
-      }
+      if (this.player && this.player.isAlive) this.player.takeDamage(data.damage);
     } else if (data.type === "bullet") {
       if (this.pvpMode && data.ownerId !== this.net.myId) {
         const b = new Bullet(data.x, data.y, Math.atan2(data.dy, data.dx), 12, data.radius, "#ff8fa3");
@@ -1140,7 +1169,15 @@ class Game {
       this.difficultyKey = data.diff;
       this.difficulty = DIFFICULTIES[data.diff];
       this.pvpMode = data.mode === "pvp";
+      this.roomCustom = data.custom || this.roomCustom;
       this.startGame(this.touchMode, data.diff, this.pvpMode, false);
+    } else if (data.type === "custom") {
+      this.roomCustom = data.custom;
+    } else if (data.type === "dead") {
+      this.roomPlayersDead[fromId] = true;
+    } else if (data.type === "back_to_room") {
+      this.roomPlayersDead = {};
+      if (this.pvpMode) this.backToRoom();
     } else if (data.type === "leave") {
       delete this.remotePlayers[fromId];
     }
@@ -1148,16 +1185,14 @@ class Game {
 
   syncState() {
     if (!this.player) return;
-    const state = {
+    this.net.broadcast({
       type: "state",
       player: {
         x: this.player.x, y: this.player.y,
-        angle: this.player.angle, hp: this.player.hp,
-        maxHp: this.player.maxHp,
+        angle: this.player.angle, hp: this.player.hp, maxHp: this.player.maxHp,
         name: this.nameInput || "Player",
       }
-    };
-    this.net.broadcast(state);
+    });
   }
 
   startGame(touchMode, diffKey, pvpMode, isBroadcast = true) {
@@ -1165,12 +1200,13 @@ class Game {
     this.difficultyKey = diffKey;
     this.difficulty = DIFFICULTIES[diffKey];
     this.pvpMode = pvpMode;
+    this.roomPlayersDead = {};
     this.state = "playing";
     this.returnToModeOnAnyInput = false;
     if (touchMode) this.setupJoysticks();
     this.resetPlay();
     if (isBroadcast) {
-      this.net.broadcast({ type: "start", diff: diffKey, mode: pvpMode ? "pvp" : "coop" });
+      this.net.broadcast({ type: "start", diff: diffKey, mode: pvpMode ? "pvp" : "coop", custom: this.roomCustom });
     }
   }
 
@@ -1180,6 +1216,14 @@ class Game {
     this.player.score = this.marks;
     this.player.equipped = [...this.equippedSkills];
     this.player.pvpMode = this.pvpMode;
+    if (this.pvpMode) {
+      this.player.equipped = this.player.equipped.filter(k => {
+        if (k === "fake" || k === "help" || k === "lockon") return false;
+        if (k === "shield" && !this.roomCustom.allowShield) return false;
+        if (k === "strike" && !this.roomCustom.allowStrike) return false;
+        return true;
+      });
+    }
     this.redBullets = []; this.redStrongBullets = []; this.redRockets = [];
     this.enemyBullets = []; this.enemyRockets = []; this.isShooting = false;
     this.enemies = [];
@@ -1243,6 +1287,17 @@ class Game {
     return null;
   }
 
+  backToRoom() {
+    this.net.broadcast({ type: "back_to_room" });
+    this.state = "lobby-room";
+    this.player = null;
+    this.enemies = [];
+    this.redBullets = []; this.redStrongBullets = []; this.redRockets = [];
+    this.enemyBullets = []; this.enemyRockets = [];
+    this.pvpMode = false;
+    this.roomPlayersDead = {};
+  }
+
   onPointerDown(id, x, y) {
     if (this.state === "lobby" || this.state === "lobby-room" || this.state === "control"
         || this.state === "difficulty" || this.state === "shop") {
@@ -1290,10 +1345,7 @@ class Game {
         if (this.rightFiring) this.powerShotPending = true;
         else {
           const sb = this.player.fireStrongBullet(this.enemies);
-          if (sb) {
-            this.redStrongBullets.push(sb);
-            this.net.broadcast({ type:"bullet", ownerId:this.net.myId, x:sb.x, y:sb.y, dx:sb.dx, dy:sb.dy, radius:sb.radius, damage:2 });
-          }
+          if (sb) { this.redStrongBullets.push(sb); this.net.broadcast({ type:"bullet", ownerId:this.net.myId, x:sb.x, y:sb.y, dx:sb.dx, dy:sb.dy, radius:sb.radius, damage:2 }); }
         }
       }
       return;
@@ -1326,10 +1378,7 @@ class Game {
       if (this.powerShotPending && this.player.isAlive) {
         this.powerShotPending = false;
         const sb = this.player.fireStrongBullet(this.enemies);
-        if (sb) {
-          this.redStrongBullets.push(sb);
-          this.net.broadcast({ type:"bullet", ownerId:this.net.myId, x:sb.x, y:sb.y, dx:sb.dx, dy:sb.dy, radius:sb.radius, damage:2 });
-        }
+        if (sb) { this.redStrongBullets.push(sb); this.net.broadcast({ type:"bullet", ownerId:this.net.myId, x:sb.x, y:sb.y, dx:sb.dx, dy:sb.dy, radius:sb.radius, damage:2 }); }
       }
     }
     this.touches.delete(id);
@@ -1362,10 +1411,7 @@ class Game {
     if (this.touchMode) return;
     if (k === "c") {
       const sb = this.player.fireStrongBullet(this.enemies);
-      if (sb) {
-        this.redStrongBullets.push(sb);
-        this.net.broadcast({ type:"bullet", ownerId:this.net.myId, x:sb.x, y:sb.y, dx:sb.dx, dy:sb.dy, radius:sb.radius, damage:2 });
-      }
+      if (sb) { this.redStrongBullets.push(sb); this.net.broadcast({ type:"bullet", ownerId:this.net.myId, x:sb.x, y:sb.y, dx:sb.dx, dy:sb.dy, radius:sb.radius, damage:2 }); }
     } else if (k === "e") {
       this.redRockets.push(...this.player.fireRockets(this.enemies));
     } else if (k === "q") this.player.activateShield();
@@ -1550,9 +1596,16 @@ class Game {
     this.redRockets = this.redRockets.filter(r => r.active);
     this.enemyBullets = this.enemyBullets.filter(b => b.active);
     this.enemyRockets = this.enemyRockets.filter(r => r.active);
+
     if (!this.player.isAlive && !this.returnToModeOnAnyInput) {
       this.marks = this.player.score;
       this.returnToModeOnAnyInput = true;
+      if (this.pvpMode && this.net.peer) {
+        this.net.broadcast({ type: "dead" });
+        setTimeout(() => {
+          if (this.pvpMode) this.backToRoom();
+        }, 1500);
+      }
     }
   }
 
@@ -1689,7 +1742,7 @@ class Game {
       ctx.font = "16px Helvetica"; ctx.fillStyle = "#ddd";
       ctx.fillText(`Marks: ${this.player.score}  |  Kills: ${this.player.kills}`, W/2, H/2);
       ctx.fillStyle = "#00fff5";
-      ctx.fillText("按任意键 / 点击返回", W/2, H/2+40);
+      ctx.fillText(this.pvpMode ? "回房间中..." : "按任意键 / 点击返回", W/2, H/2+40);
       ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
     }
   }
@@ -1758,7 +1811,6 @@ class Game {
   }
   drawHud() {
     const t = now();
-    const dsLeft = this.player.dashCd - (t - this.player.lastDashTime);
     const lines = [];
     lines.push(`[${this.difficulty.name}]${this.pvpMode?" PVP":""}  HP: ${this.player.hp}/${this.player.maxHp}  |  Marks: ${this.player.score}`);
     if (this.touchMode) lines.push("触屏 — 左摇杆移动 | 右摇杆瞄准射击 | 右上角图标使用技能");
@@ -1772,58 +1824,114 @@ class Game {
     this.buttons = [];
     ctx.textAlign = "center";
     ctx.fillStyle = "#ff2e63"; ctx.font = "bold 34px Helvetica";
-    ctx.fillText("TRIANGLE BATTLE ARENA", W/2, 100);
+    ctx.fillText("TRIANGLE BATTLE ARENA", W/2, 80);
     ctx.fillStyle = "#00fff5"; ctx.font = "18px Helvetica";
-    ctx.fillText("联机大厅", W/2, 140);
+    ctx.fillText("联机大厅", W/2, 115);
     const bw = 260, bh = 60;
-    const bx = (W-bw)/2, by = 200;
+    const bx = (W-bw)/2, by = 160;
     this.drawBtn(bx, by, bw, bh, "#06d6a0", "创建房间（作为房主）");
     this.buttons.push({ x: bx, y: by, w: bw, h: bh, action: () => this.createRoom() });
-    const by2 = by + 80;
+    const by2 = by + 75;
     this.drawBtn(bx, by2, bw, bh, "#00fff5", "加入房间");
     this.buttons.push({ x: bx, y: by2, w: bw, h: bh, action: () => this.joinRoomPrompt() });
-    const by3 = by2 + 80;
+    const by3 = by2 + 75;
     this.drawBtn(bx, by3, bw, bh, "#ff9f1c", "单机模式");
     this.buttons.push({ x: bx, y: by3, w: bw, h: bh, action: () => { this.state = "control"; } });
     ctx.fillStyle = "#666"; ctx.font = "12px Helvetica";
-    ctx.fillText("提示：创建房间后，把房间号发给朋友即可加入", W/2, by3 + 100);
-    ctx.fillText("联机功能使用 PeerJS（免费，无需注册）", W/2, by3 + 120);
+    ctx.fillText("提示：创建房间后，把房间号发给朋友即可加入", W/2, by3 + 80);
+    ctx.fillText("联机功能使用 PeerJS（免费，无需注册）", W/2, by3 + 100);
+    ctx.fillStyle = "#ff6b6b"; ctx.font = "11px Helvetica";
+    ctx.fillText("若无法连接：PeerJS 公共服务器可能不稳定，换网络重试", W/2, by3 + 125);
   }
   joinRoomPrompt() {
     const code = prompt("请输入房间号（房主的 ID）：");
     if (code) { this.roomInput = code.trim(); this.joinRoom(); }
   }
+
   drawLobbyRoom() {
     this.buttons = [];
     ctx.textAlign = "center";
     ctx.fillStyle = "#00fff5"; ctx.font = "bold 28px Helvetica";
-    ctx.fillText("房间已创建", W/2, 80);
-    ctx.fillStyle = "#ffd166"; ctx.font = "16px Helvetica";
-    ctx.fillText("房间号（发给朋友）：", W/2, 130);
-    ctx.fillStyle = "#ffffff"; ctx.font = "bold 20px monospace";
-    ctx.fillText(this.roomCode || "", W/2, 165);
-    ctx.fillStyle = "#aaa"; ctx.font = "14px Helvetica";
+    ctx.fillText("房间", W/2, 50);
+    ctx.fillStyle = "#ffd166"; ctx.font = "14px Helvetica";
+    ctx.fillText("房间号（发给朋友）：", W/2, 85);
+    ctx.fillStyle = "#ffffff"; ctx.font = "bold 18px monospace";
+    ctx.fillText(this.roomCode || "", W/2, 112);
+    ctx.fillStyle = "#aaa"; ctx.font = "13px Helvetica";
     const peers = Object.keys(this.net.connections);
-    ctx.fillText(`已连接玩家：${peers.length + 1} 人`, W/2, 210);
-    const bw = 260, bh = 55;
-    const bx = (W-bw)/2, by = 260;
-    this.drawBtn(bx, by, bw, bh, "#06d6a0", "开始合作模式");
+    ctx.fillText(`已连接：${peers.length + 1} 人`, W/2, 140);
+
+    // 自定义面板
+    const cw = 380, ch = 210;
+    const cx = (W - cw) / 2;
+    const cy = 160;
+    ctx.fillStyle = "#15152a"; ctx.fillRect(cx, cy, cw, ch);
+    ctx.strokeStyle = "#c77dff"; ctx.lineWidth = 2; ctx.strokeRect(cx, cy, cw, ch);
+    ctx.fillStyle = "#c77dff"; ctx.font = "bold 15px Helvetica"; ctx.textAlign = "center";
+    ctx.fillText("房间自定义（仅房主可改）", cx + cw/2, cy + 22);
+
+    const opts = [
+      { key: "allowShield", label: "允许 护盾 (Shield)" },
+      { key: "allowStrike", label: "允许 冲撞 (Strike)" },
+      { key: "allowLockon", label: "允许 锁定 (Lockon)", pvpBlock: true },
+      { key: "allowRocket", label: "允许 火箭 (Rocket)", pvpBlock: true },
+      { key: "allowFake",   label: "允许 假影 (Fake)",   pvpBlock: true },
+      { key: "allowHelp",   label: "允许 助手 (Help)",   pvpBlock: true },
+    ];
+    ctx.textAlign = "left";
+    opts.forEach((opt, i) => {
+      const oy = cy + 50 + i * 24;
+      const on = this.roomCustom[opt.key];
+      ctx.fillStyle = on ? "#06d6a0" : "#444";
+      ctx.fillRect(cx + 20, oy - 12, 14, 14);
+      if (on) {
+        ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(cx + 22, oy - 6); ctx.lineTo(cx + 26, oy - 2); ctx.lineTo(cx + 32, oy - 12);
+        ctx.stroke();
+      }
+      ctx.fillStyle = opt.pvpBlock ? "#ff9f1c" : "#ddd"; ctx.font = "12px Helvetica";
+      ctx.fillText(opt.label + (opt.pvpBlock ? "  (PVP 强制禁用)" : ""), cx + 42, oy);
+      if (this.net.isHost) {
+        this.buttons.push({
+          x: cx + 20, y: oy - 12, w: cw - 40, h: 16,
+          action: () => {
+            this.roomCustom[opt.key] = !this.roomCustom[opt.key];
+            this.net.broadcast({ type: "custom", custom: this.roomCustom });
+          }
+        });
+      }
+    });
+    ctx.textAlign = "center";
+
+    // 按钮
+    const bw = 260, bh = 50;
+    const bx = (W-bw)/2;
+    let by = cy + ch + 20;
+
+    // 只有房主能开始
+    if (this.net.isHost) {
+      this.drawBtn(bx, by, bw, bh, "#06d6a0", "开始合作模式");
+      this.buttons.push({ x: bx, y: by, w: bw, h: bh, action: () => {
+        this.startGame(this.touchMode, "battlers", false);
+      }});
+      by += 60;
+      this.drawBtn(bx, by, bw, bh, "#ff2e63", "开始 PVP 友战");
+      this.buttons.push({ x: bx, y: by, w: bw, h: bh, action: () => {
+        this.startGame(this.touchMode, "master", true);
+      }});
+      by += 60;
+    } else {
+      ctx.fillStyle = "#888"; ctx.font = "14px Helvetica";
+      ctx.fillText("等待房主开始游戏...", W/2, by + 25);
+      by += 60;
+    }
+    this.drawBtn(bx, by, bw, bh, "#888888", "离开房间");
     this.buttons.push({ x: bx, y: by, w: bw, h: bh, action: () => {
-      this.startGame(this.touchMode, "battlers", false);
-    }});
-    const by2 = by + 75;
-    this.drawBtn(bx, by2, bw, bh, "#ff2e63", "开始 PVP 友战");
-    this.buttons.push({ x: bx, y: by2, w: bw, h: bh, action: () => {
-      this.startGame(this.touchMode, "master", true);
-    }});
-    const by3 = by2 + 75;
-    this.drawBtn(bx, by3, bw, bh, "#888888", "离开房间");
-    this.buttons.push({ x: bx, y: by3, w: bw, h: bh, action: () => {
-      this.net.close();
-      this.remotePlayers = {};
-      this.state = "lobby";
+      this.net.close(); this.remotePlayers = {}; this.state = "lobby";
     }});
   }
+
   drawBtn(x, y, w, h, color, label) {
     ctx.fillStyle = "#1a1a2e"; ctx.fillRect(x, y, w, h);
     ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.strokeRect(x, y, w, h);
