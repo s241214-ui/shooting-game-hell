@@ -1,29 +1,26 @@
+<script src="https://unpkg.com/peerjs@1/dist/peerjs.min.js"></script>
 <!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Triangle Battle Arena</title>
+<title>Triangle Battle Arena - 联机版</title>
 <style>
-  html, body {
-    margin: 0; padding: 0; width: 100%; height: 100%;
-    background: #0b0c10; overflow: hidden;
-    touch-action: none; -webkit-user-select: none; user-select: none;
-    font-family: Helvetica, Arial, sans-serif;
-  }
-  canvas { display: block; width: 100%; height: 100%; }
+html,body{margin:0;padding:0;width:100%;height:100%;background:#0b0c10;overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none;font-family:Helvetica,Arial,sans-serif}
+canvas{display:block;width:100%;height:100%}
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+<script src="https://unpkg.com/peerjs@1/dist/peerjs.min.js"></script>
 <script>
 "use strict";
 
-// ===================== SETUP =====================
+// ===================== 基础设置 =====================
 const canvas = document.getElementById("c");
 const ctx = canvas.getContext("2d");
-
 let W = 0, H = 0;
+
 function resize() {
   const dpr = window.devicePixelRatio || 1;
   W = window.innerWidth; H = window.innerHeight;
@@ -34,7 +31,7 @@ function resize() {
 }
 window.addEventListener("resize", resize);
 
-// ===================== HELPERS =====================
+// ===================== 工具函数 =====================
 function triPoints(x, y, r, angle) {
   return [
     [x + Math.cos(angle) * r,       y + Math.sin(angle) * r],
@@ -52,17 +49,15 @@ function drawTri(x, y, r, angle, fill) {
   ctx.fillStyle = fill; ctx.fill();
 }
 const now = () => performance.now() / 1000;
-
 function drawHpBar(x, y, hp, maxHp, color = "#ff2e63") {
   const bw = 42, bh = 5;
   const bx = x - bw / 2, by = y - 32;
   ctx.fillStyle = "#2b2d42"; ctx.fillRect(bx, by, bw, bh);
   ctx.fillStyle = color;     ctx.fillRect(bx, by, (bw * hp) / maxHp, bh);
 }
-
 const SPEED_MULT = 1.7;
 
-// ===================== PROJECTILES =====================
+// ===================== 子弹 =====================
 class Bullet {
   constructor(x, y, angle, speed = 10, radius = 5, color = "#00fff5", piercing = false) {
     this.x = x; this.y = y;
@@ -74,6 +69,7 @@ class Bullet {
     this.lockOnTarget = null;
     this.damageMult = 1;
     this.fromHelper = false;
+    this.ownerId = null;
   }
   update() {
     if (this.lockOnTarget && this.lockOnTarget.isAlive) {
@@ -103,6 +99,7 @@ class StrongBullet {
     this.damageMult = 1;
     this.fromHelper = false;
     this.piercing = true;
+    this.ownerId = null;
   }
   update() {
     if (this.lockOnTarget && this.lockOnTarget.isAlive) {
@@ -136,6 +133,7 @@ class Rocket {
     this.angle = target ? Math.atan2(target.y - y, target.x - x) : 0;
     this.damage = 1;
     this.fromHelper = fromHelper;
+    this.ownerId = null;
   }
   update() {
     const elapsed = now() - this.spawnTime;
@@ -147,9 +145,10 @@ class Rocket {
   draw() { drawTri(this.x, this.y, this.size, this.angle, this.color); }
 }
 
-// ===================== PLAYER =====================
+// ===================== 玩家 =====================
 class PlayerRed {
-  constructor(x, y, hp = 20) {
+  constructor(x, y, hp = 20, ownerId = null) {
+    this.ownerId = ownerId;
     this.x = x; this.y = y;
     this.radius = 18;
     this.baseSpeed = 5.8 * SPEED_MULT;
@@ -162,70 +161,48 @@ class PlayerRed {
     this.rocketCd = 3;        this.lastRocketTime = -3;
     this.dashCd = 4;          this.lastDashTime = -4;
     this.dashEndTime = 0;
-
     this.equipped = [];
-
-    this.shieldHp = 0;
-    this.shieldMax = 10;
-    this.shieldCd = 30;
-    this.shieldLastUsed = -30;
-
-    this.strikePending = false;
-    this.isStriking = false;
-    this.strikeDir = [1, 0];
-    this.strikeTrail = [];
-    this.strikeCd = 15;
-    this.strikeLastUsed = -15;
-
-    this.lockonActive = false;
-    this.lockonSelecting = false;
-    this.lockonPath = [];
-    this.lockonCircles = [];
+    this.shieldHp = 0; this.shieldMax = 10; this.shieldCd = 30; this.shieldLastUsed = -30;
+    this.strikePending = false; this.isStriking = false;
+    this.strikeDir = [1, 0]; this.strikeTrail = [];
+    this.strikeCd = 15; this.strikeLastUsed = -15;
+    this.lockonActive = false; this.lockonSelecting = false;
+    this.lockonPath = []; this.lockonCircles = [];
     this.lockonLocked = new Set();
-    this.lockonCd = 25;
-    this.lockonLastUsed = -25;
-
-    this.fakeActive = false;
-    this.fakeStart = 0;
-    this.fakeDuration = 10;
-    this.fakeCd = 20;
-    this.fakeLastUsed = -20;
-    this.fakeAbsorbed = 0;
-    this.fakeOrbsAngle = 0;
+    this.lockonCd = 25; this.lockonLastUsed = -25;
+    this.fakeActive = false; this.fakeStart = 0; this.fakeDuration = 10;
+    this.fakeCd = 20; this.fakeLastUsed = -20;
+    this.fakeAbsorbed = 0; this.fakeOrbsAngle = 0;
     this.fakeMode = "follow";
-    // Fake attack-mode: two orbs become travelling shooters
-    this.fakeOrbPositions = [null, null];
-    this.fakeOrbTargets = [null, null];
+    this.fakeOrbPositions = [null, null]; this.fakeOrbTargets = [null, null];
     this.fakeOrbLastShoot = 0;
-
-    this.helpActive = false;
-    this.helpStart = 0;
-    this.helpDuration = 12;
-    this.helpCd = 30;
-    this.helpLastUsed = -30;
+    this.helpActive = false; this.helpStart = 0; this.helpDuration = 12;
+    this.helpCd = 30; this.helpLastUsed = -30;
     this.helpers = [];
-
     this.damageTakenThisLife = 0;
+    this.pvpMode = false;
+    this.name = "Red";
   }
-
-  hasSkill(key) { return this.equipped.includes(key); }
-
+  hasSkill(key) {
+    if (this.pvpMode && (key === "fake" || key === "help")) return false;
+    return this.equipped.includes(key);
+  }
   triggerDash() {
     const t = now();
     if (t - this.lastDashTime >= this.dashCd) {
       this.lastDashTime = t; this.dashEndTime = t + 0.18;
     }
   }
-
   fireStrongBullet(enemies) {
     const t = now();
     if (t - this.lastStrongBulletTime >= this.strongBulletCd) {
       this.lastStrongBulletTime = t;
       const sb = new StrongBullet(this.x, this.y, this.angle);
-      const locked = this.getLockonTargets();
-      const pool = locked.length ? locked : enemies;
+      sb.ownerId = this.ownerId;
+      // PVP 模式下，目标为其他玩家
+      const targets = this.pvpMode ? Object.values(game.remotePlayers || {}) : enemies;
       let best = null, bestD = Infinity;
-      for (const e of pool) {
+      for (const e of targets) {
         if (!e.isAlive) continue;
         const d = Math.hypot(e.x - this.x, e.y - this.y);
         if (d < bestD) { bestD = d; best = e; }
@@ -233,14 +210,13 @@ class PlayerRed {
       if (best) {
         sb.angle = Math.atan2(best.y - this.y, best.x - this.x);
         sb.dx = Math.cos(sb.angle); sb.dy = Math.sin(sb.angle);
-        if (locked.includes(best)) { sb.lockOnTarget = best; sb.damageMult = 1.5; }
       }
       return sb;
     }
     return null;
   }
-
   fireRockets(enemies) {
+    if (this.pvpMode) return [];
     const t = now();
     if (t - this.lastRocketTime >= this.rocketCd) {
       const alive = enemies.filter(e => e.isAlive);
@@ -258,7 +234,6 @@ class PlayerRed {
     }
     return [];
   }
-
   activateShield() {
     const t = now();
     if (!this.hasSkill("shield")) return;
@@ -280,7 +255,6 @@ class PlayerRed {
     this.strikeLastUsed = now();
     this.strikeTrail = [];
   }
-  // Called by Yellow when yellow's crash hits red while red is also crashing
   startCrashBounce(fromX, fromY) {
     const dx = this.x - fromX, dy = this.y - fromY;
     const d = Math.hypot(dx, dy) || 1;
@@ -289,7 +263,6 @@ class PlayerRed {
     this.x = Math.max(this.radius, Math.min(W - this.radius, this.x));
     this.y = Math.max(this.radius, Math.min(H - this.radius, this.y));
   }
-
   activateLockon() {
     const t = now();
     if (!this.hasSkill("lockon")) return;
@@ -326,6 +299,7 @@ class PlayerRed {
     return alive;
   }
   activateFake() {
+    if (this.pvpMode) return;
     const t = now();
     if (!this.hasSkill("fake")) return;
     if (this.fakeActive) return;
@@ -333,7 +307,6 @@ class PlayerRed {
     this.fakeActive = true;
     this.fakeStart = t;
     this.fakeAbsorbed = 0;
-    // 50/50 random between "follow" and "attack" modes
     this.fakeMode = Math.random() < 0.5 ? "follow" : "attack";
     this.fakeOrbPositions = [null, null];
     this.fakeOrbTargets = [null, null];
@@ -341,6 +314,7 @@ class PlayerRed {
     this.damageTakenThisLife = 0;
   }
   activateHelp() {
+    if (this.pvpMode) return;
     const t = now();
     if (!this.hasSkill("help")) return;
     if (this.helpActive) return;
@@ -355,16 +329,16 @@ class PlayerRed {
       this.helpers.push(new Helper(hx, hy, [...this.equipped]));
     }
   }
-
   move(dx, dy, aimAngle) {
     if (!this.isAlive) return;
     if (this.isStriking) return;
-    const speed = this.baseSpeed * (now() < this.dashEndTime ? 2.6 : 1.0);
+    let speedMult = 1.0;
+    if (this.pvpMode) speedMult = 1.3;
+    const speed = this.baseSpeed * speedMult * (now() < this.dashEndTime ? 2.6 : 1.0);
     this.x = Math.max(this.radius, Math.min(W - this.radius, this.x + dx * speed));
     this.y = Math.max(this.radius, Math.min(H - this.radius, this.y + dy * speed));
     this.angle = aimAngle;
   }
-
   updateStrike() {
     if (!this.isStriking) return;
     const speed = 22 * SPEED_MULT;
@@ -381,41 +355,30 @@ class PlayerRed {
     for (const tr of this.strikeTrail) tr.life -= 0.03;
     this.strikeTrail = this.strikeTrail.filter(t => t.life > 0);
   }
-
   updateFake() {
     if (!this.fakeActive) return;
+    if (this.pvpMode) { this.fakeActive = false; return; }
     const t = now();
     this.fakeOrbsAngle += 0.1;
-
-    // For "attack" mode, the two orbs travel to enemies and shoot independently
     if (this.fakeMode === "attack") {
       for (let i = 0; i < 2; i++) {
         let pos = this.fakeOrbPositions[i];
         if (!pos) {
-          pos = {
-            x: this.x + Math.cos(this.fakeOrbsAngle + i * Math.PI) * (this.player?.radius || 20),
-            y: this.y + Math.sin(this.fakeOrbsAngle + i * Math.PI) * (this.player?.radius || 20),
-          };
+          pos = { x: this.x + Math.cos(this.fakeOrbsAngle + i * Math.PI) * (this.radius || 20),
+                  y: this.y + Math.sin(this.fakeOrbsAngle + i * Math.PI) * (this.radius || 20) };
           this.fakeOrbPositions[i] = pos;
         }
-        // Pick a target if none
         if (!this.fakeOrbTargets[i] || !this.fakeOrbTargets[i].isAlive) {
           const alive = game.enemies.filter(e => e.isAlive);
           this.fakeOrbTargets[i] = alive.length ? alive[Math.floor(Math.random() * alive.length)] : null;
         }
         const tgt = this.fakeOrbTargets[i];
         if (tgt) {
-          // Fly toward the target
           const dx = tgt.x - pos.x, dy = tgt.y - pos.y;
           const d = Math.hypot(dx, dy) || 1;
-          if (d > 40) {
-            pos.x += (dx / d) * 4.5;
-            pos.y += (dy / d) * 4.5;
-          }
+          if (d > 40) { pos.x += (dx / d) * 4.5; pos.y += (dy / d) * 4.5; }
         }
       }
-
-      // Shoot independently — each shoot changes position
       if (t - this.fakeOrbLastShoot > 0.5) {
         this.fakeOrbLastShoot = t;
         for (let i = 0; i < 2; i++) {
@@ -427,7 +390,6 @@ class PlayerRed {
             b.fromHelper = true;
             b.damageMult = 0.5;
             game.redBullets.push(b);
-            // Change position after each shoot
             this.fakeOrbPositions[i] = {
               x: this.x + Math.cos(this.fakeOrbsAngle * 2 + i * Math.PI * 1.4) * 80,
               y: this.y + Math.sin(this.fakeOrbsAngle * 2 + i * Math.PI * 1.4) * 80,
@@ -437,7 +399,6 @@ class PlayerRed {
         }
       }
     }
-
     if (t - this.fakeStart >= this.fakeDuration) {
       const diff = game.difficultyKey;
       const mult = (diff === "master" || diff === "hell") ? 0.5 : 1.0;
@@ -457,7 +418,7 @@ class PlayerRed {
   }
   takeDamage(n = 1) {
     if (this.isStriking) return;
-    if (this.fakeActive) {
+    if (this.fakeActive && !this.pvpMode) {
       this.fakeAbsorbed += n;
       return;
     }
@@ -477,11 +438,10 @@ class PlayerRed {
   }
   onKill() {
     this.kills++;
-    if (this.kills % 25 === 0) this.hp = Math.min(this.maxHp, this.hp + 10);
+    if (!this.pvpMode && this.kills % 25 === 0) this.hp = Math.min(this.maxHp, this.hp + 10);
   }
 }
-
-// ===================== HELPER (grey) =====================
+// ===================== Helper =====================
 class Helper {
   constructor(x, y, equipped) {
     this.x = x; this.y = y;
@@ -518,7 +478,6 @@ class Helper {
   update(target, enemies, redBullets, redRockets) {
     if (!this.isAlive || !target.isAlive) return;
     const t = now();
-
     this.roamTimer -= 0.016;
     if (this.roamTimer <= 0) {
       this.roamAngle = Math.random() * Math.PI * 2;
@@ -532,7 +491,6 @@ class Helper {
       this.x += (ox / od) * this.baseSpeed;
       this.y += (oy / od) * this.baseSpeed;
     }
-
     let best = null, bestD = Infinity;
     for (const e of enemies) {
       if (!e.isAlive) continue;
@@ -540,7 +498,6 @@ class Helper {
       if (ed < bestD) { bestD = ed; best = e; }
     }
     if (best) this.angle = Math.atan2(best.y - this.y, best.x - this.x);
-
     if (t - this.lastShot > 0.15) {
       this.lastShot = t;
       const b = new Bullet(this.x, this.y, this.angle, 11, 4, "#bbbbbb", false);
@@ -548,7 +505,6 @@ class Helper {
       b.damageMult = 0.5;
       redBullets.push(b);
     }
-
     this.skillTimer -= 0.016;
     if (this.skillTimer <= 0) {
       this.skillTimer = 2 + Math.random() * 3;
@@ -573,7 +529,6 @@ class Helper {
         this.y += Math.sin(this.angle) * 30;
       }
     }
-
     this.x = Math.max(this.radius, Math.min(W - this.radius, this.x));
     this.y = Math.max(this.radius, Math.min(H - this.radius, this.y));
   }
@@ -588,21 +543,7 @@ class Helper {
   }
 }
 
-// ===================== YELLOW (new behavior) =====================
-/*
-  Yellow behavior:
-  - AIM 0.3s: brief aiming phase.
-  - RAPID FIRE 3s (0.1s per bullet): 30 bullets, red-like rapid fire.
-  - STRONG SHOT: fires one piercing heavy shot after rapid phase.
-  - Crash: dashes toward red at 5x speed to edge, with white shadow trail.
-  - If crash touches red (or grey) while red is ALSO crashing → both bounce.
-    If crash touches red (or grey) but target is NOT crashing → red takes damage,
-    yellow takes NO damage and does NOT bounce.
-  - Tough movement:
-    (a) Detect being aimed at for long time → speed boost for 3s
-    (b) Sudden sidestep (left/right) to dodge
-    (c) Sudden dash through red
-*/
+// ===================== Yellow =====================
 class YellowTriangle {
   constructor(x, y, hp = 77) {
     this.x = x; this.y = y;
@@ -611,22 +552,16 @@ class YellowTriangle {
     this.angle = 0;
     this.maxHp = hp; this.hp = hp; this.isAlive = true;
     this.preferredDistance = 260;
-
-    // Attack phases
-    this.attackMode = "aim";   // aim -> rapid -> power -> maybe crash
+    this.attackMode = "aim";
     this.modeTimer = 0;
     this.aimDuration = 0.3;
     this.rapidShootTimer = 0;
-    this.rapidShootInterval = 0.1;   // 0.1s per bullet
+    this.rapidShootInterval = 0.1;
     this.rapidDuration = 3.0;
     this.rapidShootStarted = 0;
-
-    // Power shot
     this.powerChargeStart = 0;
     this.powerChargeDuration = 1.0;
     this.powerShootDone = false;
-
-    // Crash
     this.isCharging = false; this.isDashing = false;
     this.chargeStart = 0;
     this.dashDir = [0, 0];
@@ -634,29 +569,21 @@ class YellowTriangle {
     this.dashHitDone = false;
     this.crashCooldownUntil = 0;
     this.trail = [];
-
-    // Dodge
     this.isDodging = false;
     this.dodgeDir = [0, 0];
     this.dodgeStart = 0;
     this.dodgeDuration = 0.35;
     this.dodgeCooldown = 0;
-
-    // Aim detection — track how long red has been aiming at this yellow
     this.aimedAtDuration = 0;
     this.beingAimedAt = false;
     this.speedBoostUntil = 0;
-
-    // Sidestep
     this.sidestepCooldown = 0;
-
     this.canShoot = true;
   }
   takeDamage(n = 1) {
     this.hp -= n;
     if (this.hp <= 0) { this.hp = 0; this.isAlive = false; }
   }
-
   tryDodge(threatX, threatY) {
     const t = now();
     if (t < this.dodgeCooldown) return false;
@@ -670,12 +597,10 @@ class YellowTriangle {
     this.dodgeCooldown = t + 1.2;
     return true;
   }
-
   trySidestep() {
     const t = now();
     if (t < this.sidestepCooldown) return;
     if (this.isDodging || this.isDashing || this.isCharging) return;
-    // 50/50 left or right
     const side = Math.random() < 0.5 ? 1 : -1;
     const px = -Math.sin(this.angle) * side;
     const py =  Math.cos(this.angle) * side;
@@ -686,7 +611,6 @@ class YellowTriangle {
     this.dodgeCooldown = t + 1.2;
     this.sidestepCooldown = t + 3.5;
   }
-
   tryDashThroughRed(redX, redY) {
     const t = now();
     if (t < this.sidestepCooldown) return;
@@ -700,7 +624,6 @@ class YellowTriangle {
     this.dodgeCooldown = t + 1.0;
     this.sidestepCooldown = t + 4.0;
   }
-
   triggerCrash(target) {
     if (this.isCharging || this.isDashing) return;
     this.attackMode = "crash";
@@ -713,7 +636,6 @@ class YellowTriangle {
     this.dashTravelled = 0;
     this.dashHitDone = false;
   }
-
   updateDash(target) {
     const elapsed = now() - this.chargeStart;
     if (this.isCharging) {
@@ -723,12 +645,9 @@ class YellowTriangle {
       this.x += this.dashDir[0] * sp;
       this.y += this.dashDir[1] * sp;
       this.dashTravelled += sp;
-
-      // Check helpers first
       if (game.player.helpActive) {
         for (const h of game.player.helpers) {
           if (h.isAlive && Math.hypot(h.x - this.x, h.y - this.y) < this.radius + h.radius) {
-            // If helper is also crashing, both bounce
             if (h.isStriking) {
               h.isStriking = false;
               h.x -= this.dashDir[0] * 100;
@@ -738,29 +657,23 @@ class YellowTriangle {
               this.startBounce();
               this.dashHitDone = true;
             } else {
-              // Yellow just damages grey — no bounce
               h.takeDamage(10);
               this.dashHitDone = true;
             }
           }
         }
       }
-
-      // Check red
       if (!this.dashHitDone && target.isAlive &&
           Math.hypot(target.x - this.x, target.y - this.y) < this.radius + target.radius) {
         if (target.isStriking) {
-          // Both crashing → both bounce
           target.startCrashBounce(this.x, this.y);
           this.startBounce();
           this.dashHitDone = true;
         } else {
-          // Red not crashing → red takes damage, yellow does NOT bounce
           target.takeDamage(5);
           this.dashHitDone = true;
         }
       }
-
       if (this.x < this.radius || this.x > W - this.radius ||
           this.y < this.radius || this.y > H - this.radius ||
           this.dashTravelled >= this.dashMaxDist) {
@@ -770,35 +683,28 @@ class YellowTriangle {
         this.y = Math.max(this.radius, Math.min(H - this.radius, this.y));
         this.crashCooldownUntil = now() + 4;
         this.attackMode = "aim";
-        this.aimDuration = 0.3;
         this.modeTimer = now() + this.aimDuration;
       }
     }
   }
-
   startBounce() {
     this.isDashing = false;
     this.isCharging = false;
-    // Nudge back
     this.x -= this.dashDir[0] * 150;
     this.y -= this.dashDir[1] * 150;
     this.x = Math.max(this.radius, Math.min(W - this.radius, this.x));
     this.y = Math.max(this.radius, Math.min(H - this.radius, this.y));
     this.trail = [];
     this.attackMode = "aim";
-    this.aimDuration = 0.3;
     this.modeTimer = now() + this.aimDuration;
     this.crashCooldownUntil = now() + 3;
   }
-
   update(target, enemyBullets) {
     if (!this.isAlive || !target.isAlive) return;
     const t = now();
     const dx = target.x - this.x, dy = target.y - this.y;
     const dist = Math.hypot(dx, dy) || 1;
     this.angle = Math.atan2(dy, dx);
-
-    // Dodge
     if (this.isDodging) {
       const f = (t - this.dodgeStart) / this.dodgeDuration;
       if (f >= 1) this.isDodging = false;
@@ -811,8 +717,6 @@ class YellowTriangle {
         return;
       }
     }
-
-    // Crash
     if (this.isCharging || this.isDashing) {
       this.trail.push({ x: this.x, y: this.y, a: this.angle, life: 0.35 });
       for (const tr of this.trail) tr.life -= 0.03;
@@ -820,12 +724,8 @@ class YellowTriangle {
       this.updateDash(target);
       return;
     }
-
-    // Movement — track aim, boost speed, sidestep and dash-through
     let speed = this.baseSpeed;
     if (t < this.speedBoostUntil) speed *= 1.8;
-
-    // Being aimed at for a long time → boost speed for 3s
     if (this.beingAimedAt) {
       this.aimedAtDuration += 0.016;
       if (this.aimedAtDuration > 1.2 && t > this.speedBoostUntil) {
@@ -835,11 +735,8 @@ class YellowTriangle {
     } else {
       this.aimedAtDuration = Math.max(0, this.aimedAtDuration - 0.02);
     }
-
-    // Random sidestep chance
     if (dist < 400 && Math.random() < 0.01) this.trySidestep();
     if (dist < 250 && Math.random() < 0.008) this.tryDashThroughRed(target.x, target.y);
-
     if (dist < this.preferredDistance - 25) {
       this.x -= (dx / dist) * speed * 0.6;
       this.y -= (dy / dist) * speed * 0.6;
@@ -851,8 +748,6 @@ class YellowTriangle {
       this.x += px * speed * 0.5;
       this.y += py * speed * 0.5;
     }
-
-    // Attack cycle
     if (this.attackMode === "aim") {
       if (t >= this.modeTimer) {
         this.attackMode = "rapid";
@@ -878,46 +773,32 @@ class YellowTriangle {
           this.triggerCrash(target);
         } else {
           this.attackMode = "aim";
-          this.aimDuration = 0.3;
           this.modeTimer = t + this.aimDuration;
         }
       }
     }
-    // Crash is handled by triggerCrash, which changes attackMode
-
     this.x = Math.max(this.radius, Math.min(W - this.radius, this.x));
     this.y = Math.max(this.radius, Math.min(H - this.radius, this.y));
   }
-
   draw() {
     for (const tr of this.trail) {
       ctx.globalAlpha = Math.max(0, tr.life / 0.35) * 0.5;
       drawTri(tr.x, tr.y, this.radius * 0.9, tr.a, "#ffffff");
     }
     ctx.globalAlpha = 1;
-
     let color = "#f9d56e";
-    if (this.attackMode === "power") {
-      color = (Math.floor(now() * 15) % 2 === 0) ? "#ffddaa" : "#ff8800";
-    } else if (this.isDodging) {
-      color = "#aaffaa";
-    } else if (this.isCharging) {
-      color = (Math.floor(now() * 20) % 2 === 0) ? "#ffffff" : "#ffdddd";
-    } else if (this.isDashing) {
-      color = "#ff5500";
-    } else if (now() < this.speedBoostUntil) {
-      color = "#ffee88";
-    }
-
+    if (this.attackMode === "power") color = (Math.floor(now() * 15) % 2 === 0) ? "#ffddaa" : "#ff8800";
+    else if (this.isDodging) color = "#aaffaa";
+    else if (this.isCharging) color = (Math.floor(now() * 20) % 2 === 0) ? "#ffffff" : "#ffdddd";
+    else if (this.isDashing) color = "#ff5500";
+    else if (now() < this.speedBoostUntil) color = "#ffee88";
     drawTri(this.x, this.y, this.radius, this.angle, color);
     drawHpBar(this.x, this.y, this.hp, this.maxHp);
-
     if (this.isCharging) {
       ctx.strokeStyle = "#ff0000"; ctx.lineWidth = 2; ctx.setLineDash([6, 6]);
       ctx.beginPath();
       ctx.moveTo(this.x, this.y);
-      ctx.lineTo(this.x + this.dashDir[0] * 400,
-                 this.y + this.dashDir[1] * 400);
+      ctx.lineTo(this.x + this.dashDir[0] * 400, this.y + this.dashDir[1] * 400);
       ctx.stroke(); ctx.setLineDash([]);
     }
     if (this.attackMode === "power") {
@@ -930,7 +811,7 @@ class YellowTriangle {
   }
 }
 
-// ===================== PURPLE =====================
+// ===================== Purple =====================
 class PurpleTriangle {
   constructor(x, y) {
     this.x = x; this.y = y;
@@ -949,15 +830,12 @@ class PurpleTriangle {
     const dist = Math.hypot(dx, dy) || 1;
     this.angle = Math.atan2(dy, dx);
     if (dist < this.preferredDistance - 25) {
-      this.x -= (dx / dist) * this.speed;
-      this.y -= (dy / dist) * this.speed;
+      this.x -= (dx / dist) * this.speed; this.y -= (dy / dist) * this.speed;
     } else if (dist > this.preferredDistance + 25) {
-      this.x += (dx / dist) * this.speed;
-      this.y += (dy / dist) * this.speed;
+      this.x += (dx / dist) * this.speed; this.y += (dy / dist) * this.speed;
     } else {
       const px = dy / dist, py = -dx / dist;
-      this.x += px * this.speed * 0.6;
-      this.y += py * this.speed * 0.6;
+      this.x += px * this.speed * 0.6; this.y += py * this.speed * 0.6;
     }
     if (now() - this.lastShotTime >= this.shotInterval) {
       this.lastShotTime = now();
@@ -974,7 +852,7 @@ class PurpleTriangle {
   }
 }
 
-// ===================== GREEN =====================
+// ===================== Green =====================
 class GreenTriangle {
   constructor(x, y) {
     this.x = x; this.y = y;
@@ -986,9 +864,7 @@ class GreenTriangle {
     this.waitStart = 0;
     this.chargeStart = 0;
     this.dashDir = [0, 0];
-    this.dashTravelled = 0;
-    this.dashMaxDist = 0;
-    this.dashHitDone = false;
+    this.dashTravelled = 0; this.dashMaxDist = 0; this.dashHitDone = false;
   }
   takeDamage(n = 1) {
     this.hp -= n;
@@ -1000,17 +876,13 @@ class GreenTriangle {
     const dx = target.x - this.x, dy = target.y - this.y;
     const dist = Math.hypot(dx, dy) || 1;
     this.angle = Math.atan2(dy, dx);
-
     if (this.state !== "dashing") {
       if (dist > this.preferredDistance - 40) {
-        this.x += (dx / dist) * this.speed;
-        this.y += (dy / dist) * this.speed;
+        this.x += (dx / dist) * this.speed; this.y += (dy / dist) * this.speed;
       } else if (dist < this.preferredDistance - 100) {
-        this.x -= (dx / dist) * this.speed;
-        this.y -= (dy / dist) * this.speed;
+        this.x -= (dx / dist) * this.speed; this.y -= (dy / dist) * this.speed;
       }
     }
-
     if (this.state === "firing") {
       if (t >= this.fireCooldown) {
         for (let i = 0; i < 7; i++) {
@@ -1018,38 +890,29 @@ class GreenTriangle {
             enemyRockets.push(new Rocket(this.x, this.y, target, 6.5, "#1a3a8a"));
           }
         }
-        this.state = "waiting";
-        this.waitStart = t;
+        this.state = "waiting"; this.waitStart = t;
       }
     } else if (this.state === "waiting") {
       const rocketCount = enemyRockets.filter(r => r.target === target).length;
       if (rocketCount === 0 || t - this.waitStart >= 4) {
-        this.state = "charging";
-        this.chargeStart = t;
+        this.state = "charging"; this.chargeStart = t;
         this.dashDir = [dx / dist, dy / dist];
-        this.dashMaxDist = dist + 150;
-        this.dashTravelled = 0;
-        this.dashHitDone = false;
+        this.dashMaxDist = dist + 150; this.dashTravelled = 0; this.dashHitDone = false;
       }
     } else if (this.state === "charging") {
-      if (t - this.chargeStart >= 2.0) {
-        this.state = "dashing";
-      }
+      if (t - this.chargeStart >= 2.0) this.state = "dashing";
     } else if (this.state === "dashing") {
       const sp = this.speed * 5;
-      this.x += this.dashDir[0] * sp;
-      this.y += this.dashDir[1] * sp;
+      this.x += this.dashDir[0] * sp; this.y += this.dashDir[1] * sp;
       this.dashTravelled += sp;
       if (!this.dashHitDone && target.isAlive &&
           Math.hypot(target.x - this.x, target.y - this.y) < this.radius + target.radius + this.radius * 0.5) {
-        target.takeDamage(3);
-        this.dashHitDone = true;
+        target.takeDamage(3); this.dashHitDone = true;
       }
       if (this.dashTravelled >= this.dashMaxDist ||
           this.x < this.radius || this.x > W - this.radius ||
           this.y < this.radius || this.y > H - this.radius) {
-        this.state = "firing";
-        this.fireCooldown = now() + 2.0;
+        this.state = "firing"; this.fireCooldown = now() + 2.0;
       }
     }
     this.x = Math.max(this.radius, Math.min(W - this.radius, this.x));
@@ -1061,77 +924,132 @@ class GreenTriangle {
     else if (this.state === "dashing") color = "#00ff88";
     drawTri(this.x, this.y, this.radius, this.angle, color);
     drawHpBar(this.x, this.y, this.hp, this.maxHp);
-
     if (this.state === "charging") {
       ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2; ctx.setLineDash([6, 6]);
       ctx.beginPath();
       ctx.moveTo(this.x, this.y);
-      ctx.lineTo(this.x + this.dashDir[0] * this.dashMaxDist,
-                 this.y + this.dashDir[1] * this.dashMaxDist);
+      ctx.lineTo(this.x + this.dashDir[0] * this.dashMaxDist, this.y + this.dashDir[1] * this.dashMaxDist);
       ctx.stroke(); ctx.setLineDash([]);
     }
   }
 }
 
-// ===================== DIFFICULTY =====================
+// ===================== 难度 & 技能 =====================
 const DIFFICULTIES = {
-  news: {
-    name: "NEWS", subtitle: "新闻 · 轻松入门", color: "#06d6a0",
-    playerHp: 20,
+  news: { name: "NEWS", subtitle: "新闻", color: "#06d6a0", playerHp: 20,
     startEnemies: { yellow: 0, purple: 3, green: 2 },
-    maxEnemies:  { yellow: 0, purple: 3, green: 2 },
-    scoreForYellow: null, maxYellowsOnScreen: 0,
-    desc: "3 紫色 + 2 绿色 · 无黄色",
-  },
-  battlers: {
-    name: "BATTLERS", subtitle: "战士 · 挑战", color: "#ff9f1c",
-    playerHp: 60,
+    maxEnemies: { yellow: 0, purple: 3, green: 2 },
+    scoreForYellow: null, maxYellowsOnScreen: 0 },
+  battlers: { name: "BATTLERS", subtitle: "战士", color: "#ff9f1c", playerHp: 60,
     startEnemies: { yellow: 0, purple: 5, green: 3 },
-    maxEnemies:  { yellow: 2, purple: 5, green: 3 },
-    scoreForYellow: 1500, maxYellowsOnScreen: 1,
-    desc: "60 HP · 5 紫色 + 3 绿色 · 得分 >1500 出现黄色(仅1只)",
-  },
-  master: {
-    name: "MASTER", subtitle: "大师 · 强敌", color: "#ff2e63",
-    playerHp: 30,
+    maxEnemies: { yellow: 2, purple: 5, green: 3 },
+    scoreForYellow: 1500, maxYellowsOnScreen: 1 },
+  master: { name: "MASTER", subtitle: "大师", color: "#ff2e63", playerHp: 30,
     startEnemies: { yellow: 2, purple: 0, green: 4 },
-    maxEnemies:  { yellow: 8, purple: 0, green: 4 },
-    scoreForYellow: 0, maxYellowsOnScreen: 99,
-    desc: "0 紫色 · 4 绿色 · 多只黄色同时出现",
-  },
-  hell: {
-    name: "HELL", subtitle: "地狱 · 只进不退", color: "#ff0000",
-    playerHp: 20,
+    maxEnemies: { yellow: 8, purple: 0, green: 4 },
+    scoreForYellow: 0, maxYellowsOnScreen: 99 },
+  hell: { name: "HELL", subtitle: "地狱", color: "#ff0000", playerHp: 20,
     startEnemies: { yellow: 1, purple: 0, green: 0 },
-    maxEnemies:  { yellow: 99, purple: 0, green: 0 },
-    scoreForYellow: 0, maxYellowsOnScreen: 99,
-    desc: "开局 1 黄色 · 无紫色 · 无绿色",
-  },
+    maxEnemies: { yellow: 99, purple: 0, green: 0 },
+    scoreForYellow: 0, maxYellowsOnScreen: 99 },
 };
-
 const SKILLS = {
-  shield:   { name: "SHIELD",   cost: 300 },
-  strike:   { name: "STRIKE",   cost: 500 },
-  lockon:   { name: "LOCKON",   cost: 100 },
-  fake:     { name: "FAKE",     cost: 400 },
-  help:     { name: "HELP",     cost: 600 },
+  shield: { name: "SHIELD", cost: 300 },
+  strike: { name: "STRIKE", cost: 500 },
+  lockon: { name: "LOCKON", cost: 100 },
+  fake: { name: "FAKE", cost: 400 },
+  help: { name: "HELP", cost: 600 },
 };
-
 const MAX_EQUIPPED = 3;
+// ===================== PeerJS 多人 =====================
+class Net {
+  constructor() {
+    this.peer = null;
+    this.isHost = false;
+    this.roomCode = "";
+    this.connections = {};   // 客人端：conn 对象
+    this.remotePlayers = {}; // 远端玩家状态
+    this.myId = "";
+    this.onPlayerJoin = null;
+    this.onPlayerLeave = null;
+    this.onData = null;
+  }
+  host() {
+    return new Promise((resolve, reject) => {
+      if (this.peer) { try { this.peer.destroy(); } catch(e){} }
+      this.peer = new Peer();
+      this.isHost = true;
+      this.peer.on('open', (id) => {
+        this.myId = id;
+        this.roomCode = id;
+        resolve(id);
+      });
+      this.peer.on('error', reject);
+      this.peer.on('connection', (conn) => {
+        this.connections[conn.peer] = conn;
+        conn.on('data', (data) => {
+          if (this.onData) this.onData(conn.peer, data);
+        });
+        conn.on('close', () => {
+          delete this.connections[conn.peer];
+          if (this.onPlayerLeave) this.onPlayerLeave(conn.peer);
+        });
+        if (this.onPlayerJoin) this.onPlayerJoin(conn.peer);
+      });
+    });
+  }
+  join(roomCode) {
+    return new Promise((resolve, reject) => {
+      if (this.peer) { try { this.peer.destroy(); } catch(e){} }
+      this.peer = new Peer();
+      this.isHost = false;
+      this.peer.on('open', () => {
+        this.myId = this.peer.id;
+        const conn = this.peer.connect(roomCode);
+        conn.on('open', () => {
+          this.connections[roomCode] = conn;
+          this.roomCode = roomCode;
+          conn.on('data', (data) => { if (this.onData) this.onData(roomCode, data); });
+          conn.on('close', () => {
+            delete this.connections[roomCode];
+            if (this.onPlayerLeave) this.onPlayerLeave(roomCode);
+          });
+          resolve(roomCode);
+        });
+        conn.on('error', reject);
+      });
+      this.peer.on('error', reject);
+    });
+  }
+  broadcast(msg) {
+    for (const id in this.connections) {
+      try { this.connections[id].send(msg); } catch(e){}
+    }
+  }
+  sendTo(id, msg) {
+    if (this.connections[id]) {
+      try { this.connections[id].send(msg); } catch(e){}
+    }
+  }
+  close() {
+    if (this.peer) { try { this.peer.destroy(); } catch(e){} }
+    this.peer = null;
+    this.connections = {};
+    this.remotePlayers = {};
+  }
+}
 
-// ===================== GAME =====================
+// ===================== Game 主类 =====================
 class Game {
   constructor() {
     this.touchMode = false;
-    this.state = "control";
+    this.state = "lobby"; // lobby | lobby-room | control | difficulty | shop | playing
     this.difficultyKey = null;
     this.difficulty = null;
     this.buttons = [];
-
     this.marks = 0;
     this.ownedSkills = { shield: false, strike: false, lockon: false, fake: false, help: false };
     this.equippedSkills = [];
-
     this.player = null;
     this.enemies = [];
     this.redBullets = [];
@@ -1139,152 +1057,218 @@ class Game {
     this.redRockets = [];
     this.enemyBullets = [];
     this.enemyRockets = [];
-
     this.isShooting = false;
     this.lastAutoShootTime = 0;
     this.autoShootInterval = 0.1;
-
-    this.mousePos = [W / 2, H / 2];
+    this.mousePos = [W/2, H/2];
     this.keys = {};
-
-    this.lJoy = { cx: 0, cy: 0, r: 0, kx: 0, ky: 0, active: false };
-    this.rJoy = { cx: 0, cy: 0, r: 0, kx: 0, ky: 0, active: false };
-    this.leftMoveDir = [0, 0];
+    this.lJoy = { cx:0, cy:0, r:0, kx:0, ky:0, active:false };
+    this.rJoy = { cx:0, cy:0, r:0, kx:0, ky:0, active:false };
+    this.leftMoveDir = [0,0];
     this.rightAimAngle = 0;
     this.rightFiring = false;
-
     this.skillR = 32;
-    this.rocketBtn = { cx: 0, cy: 0 };
-    this.powerBtn  = { cx: 0, cy: 0 };
+    this.rocketBtn = { cx:0, cy:0 };
+    this.powerBtn = { cx:0, cy:0 };
     this.skillBtns = {};
-
     this.powerShotPending = false;
     this.touches = new Map();
     this.returnToModeOnAnyInput = false;
+
+    // 联机
+    this.net = new Net();
+    this.roomInput = "";
+    this.nameInput = "";
+    this.roomMode = "coop"; // coop | pvp
+    this.pvpMode = false;
+    this.remotePlayers = {}; // id -> {x,y,angle,hp,maxHp,name}
+    this.lastSyncTime = 0;
   }
 
   setupJoysticks() {
     const r = Math.min(W, H) * 0.13;
     this.lJoy.r = r; this.rJoy.r = r;
-    this.lJoy.cx = r + 20;     this.lJoy.cy = H - r - 20;
+    this.lJoy.cx = r + 20; this.lJoy.cy = H - r - 20;
     this.rJoy.cx = W - r - 20; this.rJoy.cy = H - r - 20;
     this.lJoy.kx = this.lJoy.cx; this.lJoy.ky = this.lJoy.cy;
     this.rJoy.kx = this.rJoy.cx; this.rJoy.ky = this.rJoy.cy;
     this.skillR = 32;
     const y0 = 50;
     this.rocketBtn.cx = W - 40; this.rocketBtn.cy = y0;
-    this.powerBtn.cx  = W - 110; this.powerBtn.cy = y0;
+    this.powerBtn.cx = W - 110; this.powerBtn.cy = y0;
     this.skillBtns = {};
     this.equippedSkills.forEach((s, i) => {
       this.skillBtns[s] = { cx: W - 180 - i * 70, cy: y0 };
     });
   }
 
-  startGame(touchMode, difficultyKey) {
+  // ---- 联机：进入房间 ----
+  async createRoom() {
+    try {
+      const code = await this.net.host();
+      this.roomCode = code;
+      this.state = "lobby-room";
+      this.net.onPlayerJoin = (id) => {
+        console.log("玩家加入:", id);
+      };
+      this.net.onPlayerLeave = (id) => {
+        delete this.remotePlayers[id];
+      };
+      this.net.onData = (fromId, data) => this.onNetData(fromId, data);
+    } catch (e) {
+      alert("创建房间失败: " + e.message);
+    }
+  }
+  async joinRoom() {
+    if (!this.roomInput) { alert("请输入房间号"); return; }
+    try {
+      await this.net.join(this.roomInput);
+      this.roomCode = this.roomInput;
+      this.state = "lobby-room";
+      this.net.onData = (fromId, data) => this.onNetData(fromId, data);
+    } catch (e) {
+      alert("加入失败: " + e.message);
+    }
+  }
+
+  onNetData(fromId, data) {
+    if (!data || !data.type) return;
+    if (data.type === "state") {
+      this.remotePlayers[fromId] = data.player;
+    } else if (data.type === "bullet") {
+      if (this.pvpMode && data.ownerId !== this.net.myId) {
+        // 检查是否命中本地玩家
+        const b = { x: data.x, y: data.y, dx: data.dx, dy: data.dy, radius: data.radius, damage: data.damage };
+        if (Math.hypot(b.x - this.player.x, b.y - this.player.y) < this.player.radius + b.radius) {
+          this.player.takeDamage(b.damage);
+        }
+      }
+    } else if (data.type === "start") {
+      this.difficultyKey = data.diff;
+      this.difficulty = DIFFICULTIES[data.diff];
+      this.pvpMode = data.mode === "pvp";
+      this.startGame(this.touchMode, data.diff, this.pvpMode);
+    } else if (data.type === "leave") {
+      delete this.remotePlayers[fromId];
+    }
+  }
+
+  syncState() {
+    if (!this.player) return;
+    const state = {
+      type: "state",
+      player: {
+        x: this.player.x, y: this.player.y,
+        angle: this.player.angle, hp: this.player.hp,
+        maxHp: this.player.maxHp,
+        name: this.nameInput || "Player",
+      }
+    };
+    this.net.broadcast(state);
+  }
+
+  startGame(touchMode, diffKey, pvpMode) {
     this.touchMode = touchMode;
-    this.difficultyKey = difficultyKey;
-    this.difficulty = DIFFICULTIES[difficultyKey];
+    this.difficultyKey = diffKey;
+    this.difficulty = DIFFICULTIES[diffKey];
+    this.pvpMode = pvpMode;
     this.state = "playing";
     this.returnToModeOnAnyInput = false;
     if (touchMode) this.setupJoysticks();
     this.resetPlay();
+    // 广播开始
+    this.net.broadcast({ type: "start", diff: diffKey, mode: pvpMode ? "pvp" : "coop" });
   }
 
   resetPlay() {
     const d = this.difficulty;
-    this.player = new PlayerRed(200, H / 2, d.playerHp);
+    this.player = new PlayerRed(200, H/2, d.playerHp, this.net.myId);
     this.player.score = this.marks;
     this.player.equipped = [...this.equippedSkills];
-
-    this.redBullets = [];
-    this.redStrongBullets = [];
-    this.redRockets = [];
-    this.enemyBullets = [];
-    this.enemyRockets = [];
-    this.isShooting = false;
-
+    this.player.pvpMode = this.pvpMode;
+    this.redBullets = []; this.redStrongBullets = []; this.redRockets = [];
+    this.enemyBullets = []; this.enemyRockets = []; this.isShooting = false;
     this.enemies = [];
-    const totalStart = d.startEnemies.yellow + d.startEnemies.purple + d.startEnemies.green;
-    const spawnPoints = this.makeSpawnLayout(totalStart);
-    let i = 0;
-    for (let n = 0; n < d.startEnemies.yellow; n++) this.enemies.push(new YellowTriangle(...spawnPoints[i++], 77));
-    for (let n = 0; n < d.startEnemies.purple; n++) this.enemies.push(new PurpleTriangle(...spawnPoints[i++]));
-    for (let n = 0; n < d.startEnemies.green; n++)  this.enemies.push(new GreenTriangle(...spawnPoints[i++]));
+    if (!this.pvpMode) {
+      const totalStart = d.startEnemies.yellow + d.startEnemies.purple + d.startEnemies.green;
+      const spawnPoints = this.makeSpawnLayout(totalStart);
+      let i = 0;
+      for (let n = 0; n < d.startEnemies.yellow; n++) this.enemies.push(new YellowTriangle(...spawnPoints[i++], 77));
+      for (let n = 0; n < d.startEnemies.purple; n++) this.enemies.push(new PurpleTriangle(...spawnPoints[i++]));
+      for (let n = 0; n < d.startEnemies.green; n++) this.enemies.push(new GreenTriangle(...spawnPoints[i++]));
+    }
+    // 初始化远端玩家
+    for (const id in this.remotePlayers) {
+      if (id === this.net.myId) continue;
+      this.remotePlayers[id] = this.remotePlayers[id] || {};
+    }
   }
-
   makeSpawnLayout(count) {
     const pts = [];
     if (!count) return pts;
-    const rightEdge = Math.max(W * 0.6, W - 250);
+    const rightEdge = Math.max(W*0.6, W-250);
     for (let i = 0; i < count; i++) {
-      const col = i % 3;
-      const row = Math.floor(i / 3);
-      const x = rightEdge + col * 30 + Math.random() * 20;
-      const y = 100 + row * 80 + Math.random() * 40;
-      pts.push([Math.min(x, W - 40), Math.min(y, H - 60)]);
+      const col = i % 3, row = Math.floor(i/3);
+      const x = rightEdge + col*30 + Math.random()*20;
+      const y = 100 + row*80 + Math.random()*40;
+      pts.push([Math.min(x, W-40), Math.min(y, H-60)]);
     }
     return pts;
   }
-
   chooseEnemyTypeToSpawn() {
     const d = this.difficulty;
     const alive = this.enemies.filter(e => e.isAlive);
     const counts = {
       yellow: alive.filter(e => e instanceof YellowTriangle).length,
       purple: alive.filter(e => e instanceof PurpleTriangle).length,
-      green:  alive.filter(e => e instanceof GreenTriangle).length,
+      green: alive.filter(e => e instanceof GreenTriangle).length,
     };
-    const nonYellowTotal = counts.purple + counts.green;
-    const yellowsUnlocked =
-      d.scoreForYellow !== null &&
-      this.player.score >= d.scoreForYellow &&
-      d.maxEnemies.yellow > 0 &&
-      counts.yellow < d.maxYellowsOnScreen;
+    const nonY = counts.purple + counts.green;
     const pool = [];
-    if (nonYellowTotal < 5) {
+    if (nonY < 5) {
       if (counts.purple < d.maxEnemies.purple) pool.push("purple");
-      if (counts.green  < d.maxEnemies.green)  pool.push("green");
+      if (counts.green < d.maxEnemies.green) pool.push("green");
     }
-    if (yellowsUnlocked) pool.push("yellow");
+    const yUnlocked = d.scoreForYellow !== null && this.player.score >= d.scoreForYellow
+      && d.maxEnemies.yellow > 0 && counts.yellow < d.maxYellowsOnScreen;
+    if (yUnlocked) pool.push("yellow");
     if (!pool.length) return null;
     return pool[Math.floor(Math.random() * pool.length)];
   }
-
   spawnRandomEnemy() {
     const type = this.chooseEnemyTypeToSpawn();
     if (!type) return null;
     let x, y, attempts = 0;
     do {
-      const side = Math.floor(Math.random() * 4);
-      if (side === 0)      { x = 50 + Math.random() * (W - 100); y = 30; }
-      else if (side === 1) { x = 50 + Math.random() * (W - 100); y = H - 30; }
-      else if (side === 2) { x = 30; y = 50 + Math.random() * (H - 100); }
-      else                 { x = W - 30; y = 50 + Math.random() * (H - 100); }
+      const side = Math.floor(Math.random()*4);
+      if (side === 0) { x = 50+Math.random()*(W-100); y = 30; }
+      else if (side === 1) { x = 50+Math.random()*(W-100); y = H-30; }
+      else if (side === 2) { x = 30; y = 50+Math.random()*(H-100); }
+      else { x = W-30; y = 50+Math.random()*(H-100); }
       attempts++;
     } while (attempts < 30 && this.enemies.some(e =>
-      e.isAlive && Math.hypot(e.x - x, e.y - y) < (e.radius + 30)
-    ));
+      e.isAlive && Math.hypot(e.x-x, e.y-y) < (e.radius+30)));
     if (type === "yellow") return new YellowTriangle(x, y, 77);
     if (type === "purple") return new PurpleTriangle(x, y);
-    if (type === "green")  return new GreenTriangle(x, y);
+    if (type === "green") return new GreenTriangle(x, y);
     return null;
   }
 
-  // ---------- INPUT ----------
+  // ---- 输入 ----
   onPointerDown(id, x, y) {
+    if (this.state === "lobby" || this.state === "lobby-room" || this.state === "control"
+        || this.state === "difficulty" || this.state === "shop") {
+      for (const b of this.buttons) {
+        if (x >= b.x && x <= b.x+b.w && y >= b.y && y <= b.y+b.h) { b.action(); return; }
+      }
+      return;
+    }
     if (this.returnToModeOnAnyInput) {
       this.returnToModeOnAnyInput = false;
       this.marks = this.player.score;
       this.state = "difficulty";
       return;
     }
-    if (this.state === "control" || this.state === "difficulty" || this.state === "shop") {
-      for (const b of this.buttons) {
-        if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) { b.action(); return; }
-      }
-      return;
-    }
-
     if (this.player && this.player.lockonSelecting) {
       this.player.lockonPath.push({ x, y, r: 80 });
       setTimeout(() => {
@@ -1292,14 +1276,12 @@ class Game {
       }, 400);
       return;
     }
-
     if (!this.touchMode) {
       if (id === "mouse" && this.player.isAlive) this.isShooting = true;
       return;
     }
-
     for (const [skillKey, btn] of Object.entries(this.skillBtns)) {
-      if (Math.hypot(x - btn.cx, y - btn.cy) < this.skillR) {
+      if (Math.hypot(x-btn.cx, y-btn.cy) < this.skillR) {
         this.touches.set(id, skillKey);
         if (skillKey === "shield") this.player.activateShield();
         else if (skillKey === "strike") this.player.tryArmStrike();
@@ -1309,40 +1291,31 @@ class Game {
         return;
       }
     }
-    if (Math.hypot(x - this.rocketBtn.cx, y - this.rocketBtn.cy) < this.skillR) {
+    if (Math.hypot(x-this.rocketBtn.cx, y-this.rocketBtn.cy) < this.skillR) {
       this.touches.set(id, "rocket");
       if (this.player.isAlive) this.redRockets.push(...this.player.fireRockets(this.enemies));
       return;
     }
-    if (Math.hypot(x - this.powerBtn.cx, y - this.powerBtn.cy) < this.skillR) {
+    if (Math.hypot(x-this.powerBtn.cx, y-this.powerBtn.cy) < this.skillR) {
       this.touches.set(id, "power");
       if (this.player.isAlive) {
         if (this.rightFiring) this.powerShotPending = true;
         else {
           const sb = this.player.fireStrongBullet(this.enemies);
-          if (sb) this.redStrongBullets.push(sb);
+          if (sb) { this.redStrongBullets.push(sb); this.net.broadcast({ type:"bullet", ownerId:this.net.myId, x:sb.x, y:sb.y, dx:sb.dx, dy:sb.dy, radius:sb.radius, damage:2 }); }
         }
       }
       return;
     }
-
-    if (Math.hypot(x - this.lJoy.cx, y - this.lJoy.cy) < this.lJoy.r * 1.6) {
-      this.touches.set(id, "ljoy");
-      this.lJoy.active = true; this.updateLJoy(x, y); return;
+    if (Math.hypot(x-this.lJoy.cx, y-this.lJoy.cy) < this.lJoy.r*1.6) {
+      this.touches.set(id, "ljoy"); this.lJoy.active = true; this.updateLJoy(x, y); return;
     }
-    if (Math.hypot(x - this.rJoy.cx, y - this.rJoy.cy) < this.rJoy.r * 1.6) {
-      this.touches.set(id, "rjoy");
-      this.rJoy.active = true; this.rightFiring = true; this.updateRJoy(x, y); return;
+    if (Math.hypot(x-this.rJoy.cx, y-this.rJoy.cy) < this.rJoy.r*1.6) {
+      this.touches.set(id, "rjoy"); this.rJoy.active = true; this.rightFiring = true; this.updateRJoy(x, y); return;
     }
-    if (x > W / 2) {
-      this.touches.set(id, "rjoy");
-      this.rJoy.active = true; this.rightFiring = true; this.updateRJoy(x, y);
-    } else {
-      this.touches.set(id, "ljoy");
-      this.lJoy.active = true; this.updateLJoy(x, y);
-    }
+    if (x > W/2) { this.touches.set(id, "rjoy"); this.rJoy.active = true; this.rightFiring = true; this.updateRJoy(x, y); }
+    else { this.touches.set(id, "ljoy"); this.lJoy.active = true; this.updateLJoy(x, y); }
   }
-
   onPointerMove(id, x, y) {
     if (this.state !== "playing") return;
     if (!this.touchMode) { if (id === "mouse") this.mousePos = [x, y]; return; }
@@ -1350,47 +1323,38 @@ class Game {
     if (t === "ljoy") this.updateLJoy(x, y);
     else if (t === "rjoy") this.updateRJoy(x, y);
   }
-
   onPointerUp(id) {
     if (this.state !== "playing") return;
-    if (!this.touchMode) {
-      if (id === "mouse") this.isShooting = false;
-      return;
-    }
+    if (!this.touchMode) { if (id === "mouse") this.isShooting = false; return; }
     const t = this.touches.get(id);
-    if (t === "ljoy") {
-      this.lJoy.active = false; this.leftMoveDir = [0, 0];
-      this.lJoy.kx = this.lJoy.cx; this.lJoy.ky = this.lJoy.cy;
-    } else if (t === "rjoy") {
+    if (t === "ljoy") { this.lJoy.active = false; this.leftMoveDir = [0,0]; this.lJoy.kx = this.lJoy.cx; this.lJoy.ky = this.lJoy.cy; }
+    else if (t === "rjoy") {
       this.rJoy.active = false; this.rightFiring = false;
       this.rJoy.kx = this.rJoy.cx; this.rJoy.ky = this.rJoy.cy;
       if (this.player.strikePending) this.player.beginStrike(this.rightAimAngle);
       if (this.powerShotPending && this.player.isAlive) {
         this.powerShotPending = false;
         const sb = this.player.fireStrongBullet(this.enemies);
-        if (sb) this.redStrongBullets.push(sb);
+        if (sb) { this.redStrongBullets.push(sb); this.net.broadcast({ type:"bullet", ownerId:this.net.myId, x:sb.x, y:sb.y, dx:sb.dx, dy:sb.dy, radius:sb.radius, damage:2 }); }
       }
     }
     this.touches.delete(id);
   }
-
   updateLJoy(x, y) {
     let dx = x - this.lJoy.cx, dy = y - this.lJoy.cy;
     const d = Math.hypot(dx, dy);
-    if (d > this.lJoy.r) { dx = dx / d * this.lJoy.r; dy = dy / d * this.lJoy.r; }
+    if (d > this.lJoy.r) { dx = dx/d*this.lJoy.r; dy = dy/d*this.lJoy.r; }
     this.lJoy.kx = this.lJoy.cx + dx; this.lJoy.ky = this.lJoy.cy + dy;
     const nd = Math.hypot(dx, dy);
-    this.leftMoveDir = nd > 5 ? [dx / nd, dy / nd] : [0, 0];
+    this.leftMoveDir = nd > 5 ? [dx/nd, dy/nd] : [0,0];
   }
-
   updateRJoy(x, y) {
     let dx = x - this.rJoy.cx, dy = y - this.rJoy.cy;
     const d = Math.hypot(dx, dy);
-    if (d > this.rJoy.r) { dx = dx / d * this.rJoy.r; dy = dy / d * this.rJoy.r; }
+    if (d > this.rJoy.r) { dx = dx/d*this.rJoy.r; dy = dy/d*this.rJoy.r; }
     this.rJoy.kx = this.rJoy.cx + dx; this.rJoy.ky = this.rJoy.cy + dy;
     if (d > 5) this.rightAimAngle = Math.atan2(dy, dx);
   }
-
   onKey(k, isDown) {
     k = k.toLowerCase();
     this.keys[k] = isDown;
@@ -1404,14 +1368,12 @@ class Game {
     if (this.touchMode) return;
     if (k === "c") {
       const sb = this.player.fireStrongBullet(this.enemies);
-      if (sb) this.redStrongBullets.push(sb);
+      if (sb) { this.redStrongBullets.push(sb); this.net.broadcast({ type:"bullet", ownerId:this.net.myId, x:sb.x, y:sb.y, dx:sb.dx, dy:sb.dy, radius:sb.radius, damage:2 }); }
     } else if (k === "e") {
       this.redRockets.push(...this.player.fireRockets(this.enemies));
     } else if (k === "q") this.player.activateShield();
-    else if (k === "f") {
-      this.player.tryArmStrike();
-      if (this.player.strikePending) this.player.beginStrike(this.player.angle);
-    } else if (k === "r") {
+    else if (k === "f") { this.player.tryArmStrike(); if (this.player.strikePending) this.player.beginStrike(this.player.angle); }
+    else if (k === "r") {
       this.player.activateLockon();
       if (this.player.lockonSelecting) {
         this.player.lockonPath.push({ x: this.mousePos[0], y: this.mousePos[1], r: 80 });
@@ -1422,750 +1384,648 @@ class Game {
     else if (k === " ") this.player.triggerDash();
   }
 
-  // ---------- UPDATE ----------
   update() {
     if (this.state !== "playing" || !this.player) return;
-
     const aimAngle = this.touchMode ? this.rightAimAngle :
-      Math.atan2(this.mousePos[1] - this.player.y, this.mousePos[0] - this.player.x);
-
+      Math.atan2(this.mousePos[1]-this.player.y, this.mousePos[0]-this.player.x);
     const t = now();
     this.player.updateLockon();
-
     if (!this.player.isStriking) {
       const firing = (!this.touchMode && this.isShooting) || (this.touchMode && this.rightFiring);
       if (firing && this.player.isAlive && t - this.lastAutoShootTime >= this.autoShootInterval) {
         this.lastAutoShootTime = t;
         const bullet = new Bullet(this.player.x, this.player.y, aimAngle, 12, 5, "#00fff5");
-        const locked = this.player.getLockonTargets();
-        if (locked.length) {
-          let best = null, bestD = Infinity;
-          for (const e of locked) {
-            const d = Math.hypot(e.x - this.player.x, e.y - this.player.y);
-            if (d < bestD) { bestD = d; best = e; }
-          }
-          if (best) { bullet.lockOnTarget = best; bullet.damageMult = 1.5; }
-        }
+        bullet.ownerId = this.net.myId;
+        if (this.pvpMode) bullet.damageMult = 0.5;
         this.redBullets.push(bullet);
+        // 同步给其他玩家
+        this.net.broadcast({ type:"bullet", ownerId:this.net.myId, x:bullet.x, y:bullet.y, dx:bullet.dx, dy:bullet.dy, radius:bullet.radius, damage:bullet.damageMult });
       }
     }
-
     let dx = 0, dy = 0;
     if (this.touchMode) [dx, dy] = this.leftMoveDir;
     else {
-      if (this.keys["w"] || this.keys["arrowup"])    dy -= 1;
-      if (this.keys["s"] || this.keys["arrowdown"])  dy += 1;
-      if (this.keys["a"] || this.keys["arrowleft"])  dx -= 1;
+      if (this.keys["w"] || this.keys["arrowup"]) dy -= 1;
+      if (this.keys["s"] || this.keys["arrowdown"]) dy += 1;
+      if (this.keys["a"] || this.keys["arrowleft"]) dx -= 1;
       if (this.keys["d"] || this.keys["arrowright"]) dx += 1;
     }
-    if (dx || dy) {
-      const n = Math.hypot(dx, dy);
-      this.player.move(dx / n, dy / n, aimAngle);
-    } else {
-      this.player.move(0, 0, aimAngle);
-    }
+    if (dx || dy) { const n = Math.hypot(dx, dy); this.player.move(dx/n, dy/n, aimAngle); }
+    else this.player.move(0, 0, aimAngle);
     this.player.updateStrike();
     this.player.updateFake();
 
-    if (this.player.helpActive) {
-      if (t - this.player.helpStart >= this.player.helpDuration) {
-        this.player.helpActive = false;
-        this.player.helpLastUsed = t;
-        this.player.helpers = [];
-      } else {
-        let allDead = true;
-        for (const h of this.player.helpers) {
-          h.update(this.player, this.enemies, this.redBullets, this.redRockets);
-          if (h.isAlive) allDead = false;
-        }
-        if (allDead) {
-          this.player.helpActive = false;
-          this.player.helpLastUsed = t;
-          this.player.helpers = [];
+    // 同步状态（每 50ms）
+    if (t - this.lastSyncTime > 0.05) { this.lastSyncTime = t; this.syncState(); }
+
+    // 敌人（仅合作模式）
+    if (!this.pvpMode) {
+      if (this.player.helpActive) {
+        if (t - this.player.helpStart >= this.player.helpDuration) {
+          this.player.helpActive = false; this.player.helpLastUsed = t; this.player.helpers = [];
+        } else {
+          let allDead = true;
+          for (const h of this.player.helpers) {
+            h.update(this.player, this.enemies, this.redBullets, this.redRockets);
+            if (h.isAlive) allDead = false;
+          }
+          if (allDead) { this.player.helpActive = false; this.player.helpLastUsed = t; this.player.helpers = []; }
         }
       }
-    }
-
-    if (this.player.isStriking) {
-      const strikeRadius = this.player.radius * 1.5;
+      if (this.player.isStriking) {
+        const sr = this.player.radius * 1.5;
+        for (const e of this.enemies) if (e.isAlive && Math.hypot(this.player.x-e.x, this.player.y-e.y) < e.radius+sr) e.takeDamage(99);
+      }
+      const yellows = this.enemies.filter(e => e instanceof YellowTriangle && e.isAlive);
+      const yShoot = yellows.slice(0, 5);
+      for (const y of yellows) y.canShoot = yShoot.includes(y);
+      for (const y of yellows) {
+        const ang = Math.atan2(y.y-this.player.y, y.x-this.player.x);
+        let diff = ang - aimAngle;
+        while (diff > Math.PI) diff -= Math.PI*2;
+        while (diff < -Math.PI) diff += Math.PI*2;
+        y.beingAimedAt = Math.abs(diff) < 0.18;
+      }
+      const newEnemies = [];
       for (const e of this.enemies) {
-        if (e.isAlive && Math.hypot(this.player.x - e.x, this.player.y - e.y) < e.radius + strikeRadius) {
-          e.takeDamage(99);
+        if (e instanceof YellowTriangle) e.update(this.player, this.enemyBullets);
+        else if (e instanceof GreenTriangle) e.update(this.player, this.enemyRockets);
+        else e.update(this.player, this.enemyBullets);
+        if (e instanceof YellowTriangle && e.isAlive) {
+          for (const sb of this.redStrongBullets) if (sb.active && Math.hypot(sb.x-e.x, sb.y-e.y) < 200) { e.tryDodge(sb.x, sb.y); break; }
+          if (!e.isDodging) for (const r of this.redRockets) if (r.active && Math.hypot(r.x-e.x, r.y-e.y) < 140) { e.tryDodge(r.x, r.y); break; }
+        }
+        if (e.isAlive) newEnemies.push(e);
+        else { this.player.score += 100; this.player.onKill(); const resp = this.spawnRandomEnemy(); if (resp) newEnemies.push(resp); }
+      }
+      this.enemies = newEnemies;
+      // 假影第二攻击
+      if (this.player.fakeActive && this.player.fakeMode === "follow") {
+        if (t - (this.player.lastFakeOrbShot || 0) > 0.3) {
+          this.player.lastFakeOrbShot = t;
+          const rr = this.player.radius + 20;
+          for (let i = 0; i < 2; i++) {
+            const a = this.player.fakeOrbsAngle + i*Math.PI;
+            const ox = this.player.x + Math.cos(a)*rr, oy = this.player.y + Math.sin(a)*rr;
+            const b = new Bullet(ox, oy, aimAngle, 11, 4, "#c77dff", false);
+            b.fromHelper = true; b.damageMult = 0.5;
+            this.redBullets.push(b);
+          }
         }
       }
     }
 
-    const yellows = this.enemies.filter(e => e instanceof YellowTriangle && e.isAlive);
-    const yellowsToShoot = yellows.slice(0, 5);
-    for (const y of yellows) y.canShoot = yellowsToShoot.includes(y);
+    for (const b of this.redBullets) b.update();
+    for (const b of this.redStrongBullets) b.update();
+    for (const r of this.redRockets) r.update();
+    for (const b of this.enemyBullets) b.update();
+    for (const r of this.enemyRockets) r.update();
 
-    // Aim detection for Yellows: if player aims within 10 deg of a yellow for >1.2s → boost
-    for (const y of yellows) {
-      const ang = Math.atan2(y.y - this.player.y, y.x - this.player.x);
-      let diff = ang - aimAngle;
-      while (diff >  Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      y.beingAimedAt = Math.abs(diff) < 0.18;
-    }
-
-    const newEnemies = [];
-    for (const e of this.enemies) {
-      if (e instanceof YellowTriangle)    e.update(this.player, this.enemyBullets);
-      else if (e instanceof GreenTriangle) e.update(this.player, this.enemyRockets);
-      else                                 e.update(this.player, this.enemyBullets);
-
-      if (e instanceof YellowTriangle && e.isAlive) {
-        // Dodge incoming
+    // PVP 命中检测
+    if (this.pvpMode) {
+      for (const id in this.remotePlayers) {
+        const rp = this.remotePlayers[id];
+        if (rp.hp <= 0) continue;
+        for (const b of this.redBullets) {
+          if (b.active && Math.hypot(b.x-rp.x, b.y-rp.y) < 18 + b.radius) {
+            b.active = false;
+            this.net.sendTo(id, { type:"hit", damage:0.5 });
+          }
+        }
         for (const sb of this.redStrongBullets) {
-          if (sb.active && Math.hypot(sb.x - e.x, sb.y - e.y) < 200) {
-            e.tryDodge(sb.x, sb.y);
+          if (sb.active && Math.hypot(sb.x-rp.x, sb.y-rp.y) < 18 + sb.radius) {
+            this.net.sendTo(id, { type:"hit", damage:2 });
+          }
+        }
+      }
+      // 如果玩家冲撞别人
+      if (this.player.isStriking) {
+        for (const id in this.remotePlayers) {
+          const rp = this.remotePlayers[id];
+          if (Math.hypot(this.player.x-rp.x, this.player.y-rp.y) < this.player.radius + 18) {
+            this.net.sendTo(id, { type:"hit", damage:5 });
+          }
+        }
+      }
+    } else {
+      // 合作模式：本地碰撞
+      for (const b of this.redBullets) {
+        if (!b.active) continue;
+        for (const e of this.enemies) {
+          if (e.isAlive && Math.hypot(b.x-e.x, b.y-e.y) < e.radius+b.radius) {
+            const dmg = (b.lockOnTarget === e ? b.damageMult : 1) * (b.fromHelper ? 0.5 : 1);
+            e.takeDamage(dmg);
+            if (!b.piercing) b.active = false;
             break;
           }
         }
-        if (!e.isDodging) {
-          for (const r of this.redRockets) {
-            if (r.active && Math.hypot(r.x - e.x, r.y - e.y) < 140) {
-              e.tryDodge(r.x, r.y);
-              break;
-            }
-          }
-        }
-        if (!e.isDodging && this.player.fakeActive) {
-          for (const b of this.redBullets) {
-            if (b.active && Math.hypot(b.x - e.x, b.y - e.y) < 120) {
-              e.tryDodge(b.x, b.y);
-              break;
-            }
+      }
+      for (const sb of this.redStrongBullets) {
+        if (!sb.active) continue;
+        for (const e of this.enemies) {
+          if (e.isAlive && Math.hypot(sb.x-e.x, sb.y-e.y) < e.radius+sb.radius) {
+            const dmg = sb.lockOnTarget === e ? 99*sb.damageMult : 99;
+            e.takeDamage(sb.fromHelper ? dmg*0.5 : dmg);
           }
         }
       }
-
-      if (e.isAlive) newEnemies.push(e);
-      else {
-        this.player.score += 100;
-        this.player.onKill();
-        const resp = this.spawnRandomEnemy();
-        if (resp) newEnemies.push(resp);
-      }
-    }
-    this.enemies = newEnemies;
-
-    for (const b of this.redBullets)       b.update();
-    for (const b of this.redStrongBullets) b.update();
-    for (const r of this.redRockets)       r.update();
-    for (const b of this.enemyBullets)     b.update();
-    for (const r of this.enemyRockets)     r.update();
-
-    // Fake "follow" mode — orbs shoot same direction as red
-    if (this.player.fakeActive && this.player.fakeMode === "follow") {
-      if (t - (this.player.lastFakeOrbShot || 0) > 0.3) {
-        this.player.lastFakeOrbShot = t;
-        const rr = this.player.radius + 20;
-        for (let i = 0; i < 2; i++) {
-          const a = this.player.fakeOrbsAngle + i * Math.PI;
-          const ox = this.player.x + Math.cos(a) * rr;
-          const oy = this.player.y + Math.sin(a) * rr;
-          const b = new Bullet(ox, oy, aimAngle, 11, 4, "#c77dff", false);
-          b.fromHelper = true;
-          b.damageMult = 0.5;
-          this.redBullets.push(b);
+      for (const r of this.redRockets) {
+        if (!r.active) continue;
+        for (const e of this.enemies) {
+          if (e.isAlive && Math.hypot(r.x-e.x, r.y-e.y) < e.radius+r.radius) {
+            r.active = false; e.takeDamage(r.damage*2); break;
+          }
         }
       }
-    }
-    // Fake "attack" mode shooting is handled inside player.updateFake()
-
-    // Collisions
-    for (const b of this.redBullets) {
-      if (!b.active) continue;
-      for (const e of this.enemies) {
-        if (e.isAlive && Math.hypot(b.x - e.x, b.y - e.y) < e.radius + b.radius) {
-          const dmg = (b.lockOnTarget === e ? b.damageMult : 1) * (b.fromHelper ? 0.5 : 1);
-          e.takeDamage(dmg);
-          if (!b.piercing) b.active = false;
-          break;
+      if (this.player.isAlive) {
+        for (const b of this.enemyBullets) {
+          if (b.active && Math.hypot(b.x-this.player.x, b.y-this.player.y) < this.player.radius+b.radius) {
+            if (!b.piercing) b.active = false;
+            this.player.takeDamage(b.damageMult || 1);
+          }
         }
-      }
-    }
-    for (const sb of this.redStrongBullets) {
-      if (!sb.active) continue;
-      for (const e of this.enemies) {
-        if (e.isAlive && Math.hypot(sb.x - e.x, sb.y - e.y) < e.radius + sb.radius) {
-          const dmg = sb.lockOnTarget === e ? 99 * sb.damageMult : 99;
-          e.takeDamage(sb.fromHelper ? dmg * 0.5 : dmg);
-        }
-      }
-    }
-    for (const r of this.redRockets) {
-      if (!r.active) continue;
-      for (const e of this.enemies) {
-        if (e.isAlive && Math.hypot(r.x - e.x, r.y - e.y) < e.radius + r.radius) {
-          r.active = false; e.takeDamage(r.damage * 2); break;
+        for (const r of this.enemyRockets) {
+          if (r.active && Math.hypot(r.x-this.player.x, r.y-this.player.y) < this.player.radius+r.radius) {
+            r.active = false; this.player.takeDamage(1);
+          }
         }
       }
     }
 
-    if (this.player.isAlive) {
-      for (const b of this.enemyBullets) {
-        if (b.active && Math.hypot(b.x - this.player.x, b.y - this.player.y) < this.player.radius + b.radius) {
-          if (!b.piercing) b.active = false;
-          else { b.x += b.dx * this.player.radius * 2.5; b.y += b.dy * this.player.radius * 2.5; }
-          this.player.takeDamage(b.damageMult || 1);
-        }
-      }
-      for (const r of this.enemyRockets) {
-        if (r.active && Math.hypot(r.x - this.player.x, r.y - this.player.y) < this.player.radius + r.radius) {
-          r.active = false; this.player.takeDamage(1);
-        }
-      }
-    }
-
-    this.redBullets       = this.redBullets.filter(b => b.active);
+    this.redBullets = this.redBullets.filter(b => b.active);
     this.redStrongBullets = this.redStrongBullets.filter(b => b.active);
-    this.redRockets       = this.redRockets.filter(r => r.active);
-    this.enemyBullets     = this.enemyBullets.filter(b => b.active);
-    this.enemyRockets     = this.enemyRockets.filter(r => r.active);
-
+    this.redRockets = this.redRockets.filter(r => r.active);
+    this.enemyBullets = this.enemyBullets.filter(b => b.active);
+    this.enemyRockets = this.enemyRockets.filter(r => r.active);
     if (!this.player.isAlive && !this.returnToModeOnAnyInput) {
       this.marks = this.player.score;
       this.returnToModeOnAnyInput = true;
     }
   }
 
-  // ---------- DRAW ----------
+  // ---- 绘制 ----
   draw() {
     ctx.clearRect(0, 0, W, H);
     ctx.fillStyle = "#0b0c10"; ctx.fillRect(0, 0, W, H);
-
-    if (this.state === "control")    return this.drawControlSelect();
+    if (this.state === "lobby") return this.drawLobby();
+    if (this.state === "lobby-room") return this.drawLobbyRoom();
+    if (this.state === "control") return this.drawControlSelect();
     if (this.state === "difficulty") return this.drawDifficultySelect();
-    if (this.state === "shop")       return this.drawShop();
-
+    if (this.state === "shop") return this.drawShop();
+    // playing
     if (this.player.lockonSelecting) {
       ctx.fillStyle = "rgba(0,0,0,0.4)"; ctx.fillRect(0, 0, W, H);
-      if (this.touchMode) {
-        ctx.fillStyle = "#00fff5"; ctx.font = "18px Helvetica"; ctx.textAlign = "center";
-        ctx.fillText("Tap to place lockon circle", W / 2, 60);
-        ctx.textAlign = "left";
-      } else {
-        ctx.fillStyle = "#00fff5"; ctx.font = "18px Helvetica"; ctx.textAlign = "center";
-        ctx.fillText("Move mouse & click to place lockon circle", W / 2, 60);
-        ctx.textAlign = "left";
+      ctx.fillStyle = "#00fff5"; ctx.font = "18px Helvetica"; ctx.textAlign = "center";
+      ctx.fillText(this.touchMode ? "点击放置锁定圈" : "移动鼠标并点击放置锁定圈", W/2, 60);
+      ctx.textAlign = "left";
+      if (!this.touchMode) {
         ctx.strokeStyle = "#00fff5"; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(this.mousePos[0], this.mousePos[1], 80, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath(); ctx.arc(this.mousePos[0], this.mousePos[1], 80, 0, Math.PI*2); ctx.stroke();
       }
       for (const c of this.player.lockonPath) {
         ctx.strokeStyle = "#00fff5"; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI*2); ctx.stroke();
       }
     }
-
     const t = now();
     for (const c of this.player.lockonCircles) {
       const remain = c.expire - t;
       if (remain > 0) {
-        ctx.strokeStyle = `rgba(0,255,245,${Math.min(1, remain / 2)})`;
-        ctx.lineWidth = 2;
-        ctx.setLineDash([5, 5]);
-        ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2); ctx.stroke();
+        ctx.strokeStyle = `rgba(0,255,245,${Math.min(1, remain/2)})`;
+        ctx.lineWidth = 2; ctx.setLineDash([5, 5]);
+        ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI*2); ctx.stroke();
         ctx.setLineDash([]);
       }
     }
     for (const e of this.player.lockonLocked) {
       if (e.isAlive) {
         ctx.strokeStyle = "#00fff5"; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(e.x, e.y, e.radius + 8, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath(); ctx.arc(e.x, e.y, e.radius+8, 0, Math.PI*2); ctx.stroke();
       }
     }
-
     if (this.player.isStriking) {
       for (const tr of this.player.strikeTrail) {
-        ctx.globalAlpha = Math.max(0, tr.life / 0.25) * 0.7;
+        ctx.globalAlpha = Math.max(0, tr.life/0.25)*0.7;
         drawTri(tr.x, tr.y, this.player.radius, tr.a, "#ffffff");
       }
       ctx.globalAlpha = 1;
     }
-
     for (const h of this.player.helpers) h.draw();
-
+    // 远端玩家
+    for (const id in this.remotePlayers) {
+      const rp = this.remotePlayers[id];
+      if (rp && rp.x !== undefined) {
+        drawTri(rp.x, rp.y, 18, rp.angle || 0, "#ff8fa3");
+        drawHpBar(rp.x, rp.y, rp.hp || 20, rp.maxHp || 20, "#06d6a0");
+        ctx.fillStyle = "#ffffff"; ctx.font = "10px Helvetica"; ctx.textAlign = "center";
+        ctx.fillText(rp.name || "P2", rp.x, rp.y - 40);
+        ctx.textAlign = "left";
+      }
+    }
     if (this.player.isAlive) {
       let color = "#ff2e63";
       if (this.player.isStriking) color = "#ffffff";
       else if (now() < this.player.dashEndTime) color = "#ff8fa3";
       else if (this.player.shieldHp > 0) color = "#06d6a0";
-
       if (this.player.fakeActive) {
         if (this.player.fakeMode === "follow") {
-          // Orbs circle around red
           const r = this.player.radius + 20;
           for (let i = 0; i < 2; i++) {
-            const a = this.player.fakeOrbsAngle + i * Math.PI;
-            const ox = this.player.x + Math.cos(a) * r;
-            const oy = this.player.y + Math.sin(a) * r;
+            const a = this.player.fakeOrbsAngle + i*Math.PI;
             ctx.strokeStyle = "#c77dff"; ctx.lineWidth = 2;
-            ctx.beginPath(); ctx.arc(ox, oy, 10, 0, Math.PI * 2); ctx.stroke();
+            ctx.beginPath(); ctx.arc(this.player.x+Math.cos(a)*r, this.player.y+Math.sin(a)*r, 10, 0, Math.PI*2); ctx.stroke();
           }
         } else {
-          // Orbs travel to enemies
           for (let i = 0; i < 2; i++) {
             const pos = this.player.fakeOrbPositions[i];
             if (pos) {
               ctx.strokeStyle = "#c77dff"; ctx.lineWidth = 2;
-              ctx.beginPath(); ctx.arc(pos.x, pos.y, 10, 0, Math.PI * 2); ctx.stroke();
+              ctx.beginPath(); ctx.arc(pos.x, pos.y, 10, 0, Math.PI*2); ctx.stroke();
               ctx.fillStyle = "#c77dff";
-              ctx.beginPath(); ctx.arc(pos.x, pos.y, 4, 0, Math.PI * 2); ctx.fill();
+              ctx.beginPath(); ctx.arc(pos.x, pos.y, 4, 0, Math.PI*2); ctx.fill();
             }
           }
         }
       }
-
       if (this.player.shieldHp > 0) {
         ctx.strokeStyle = "#06d6a0"; ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.arc(this.player.x, this.player.y, this.player.radius + 6, 0, Math.PI * 2);
-        ctx.stroke();
+        ctx.beginPath(); ctx.arc(this.player.x, this.player.y, this.player.radius+6, 0, Math.PI*2); ctx.stroke();
       }
-
       drawTri(this.player.x, this.player.y, this.player.radius, this.player.angle, color);
       drawHpBar(this.player.x, this.player.y, this.player.hp, this.player.maxHp, "#06d6a0");
-
       if (this.player.strikePending) {
-        const ex = this.player.x + Math.cos(this.rightAimAngle) * 300;
-        const ey = this.player.y + Math.sin(this.rightAimAngle) * 300;
+        const ex = this.player.x + Math.cos(this.rightAimAngle)*300;
+        const ey = this.player.y + Math.sin(this.rightAimAngle)*300;
         ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2; ctx.setLineDash([6, 6]);
         ctx.beginPath(); ctx.moveTo(this.player.x, this.player.y); ctx.lineTo(ex, ey); ctx.stroke();
         ctx.setLineDash([]);
       }
     }
-
     for (const e of this.enemies) if (e.isAlive) e.draw();
-    for (const b of this.redBullets)       b.draw();
+    for (const b of this.redBullets) b.draw();
     for (const b of this.redStrongBullets) b.draw();
-    for (const r of this.redRockets)       r.draw();
-    for (const b of this.enemyBullets)     b.draw();
-    for (const r of this.enemyRockets)     r.draw();
-
+    for (const r of this.redRockets) r.draw();
+    for (const b of this.enemyBullets) b.draw();
+    for (const r of this.enemyRockets) r.draw();
     if (this.touchMode) {
       this.drawJoystick(this.lJoy, "#00fff5", "#334455");
       this.drawJoystick(this.rJoy, "#ff2e63", "#553344");
       if (this.rJoy.active) {
-        const ex = this.rJoy.cx + Math.cos(this.rightAimAngle) * (this.rJoy.r + 20);
-        const ey = this.rJoy.cy + Math.sin(this.rightAimAngle) * (this.rJoy.r + 20);
+        const ex = this.rJoy.cx + Math.cos(this.rightAimAngle)*(this.rJoy.r+20);
+        const ey = this.rJoy.cy + Math.sin(this.rightAimAngle)*(this.rJoy.r+20);
         ctx.setLineDash([5, 5]); ctx.strokeStyle = "#ff2e63"; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.moveTo(this.rJoy.cx, this.rJoy.cy); ctx.lineTo(ex, ey); ctx.stroke();
         ctx.setLineDash([]);
       }
     }
-
     const rkLeft = this.player.rocketCd - (t - this.player.lastRocketTime);
     const sbLeft = this.player.strongBulletCd - (t - this.player.lastStrongBulletTime);
-    this.drawSkillButton(this.rocketBtn, "rocket", "E",
-      Math.max(0, rkLeft / this.player.rocketCd), this.touchesValueHas("rocket"));
-    this.drawSkillButton(this.powerBtn, "power", "C",
-      Math.max(0, sbLeft / this.player.strongBulletCd), this.touchesValueHas("power"));
-
+    this.drawSkillButton(this.rocketBtn, "rocket", "E", Math.max(0, rkLeft/this.player.rocketCd), this.touchesValueHas("rocket"));
+    this.drawSkillButton(this.powerBtn, "power", "C", Math.max(0, sbLeft/this.player.strongBulletCd), this.touchesValueHas("power"));
     for (const [key, btn] of Object.entries(this.skillBtns)) {
       let cdFrac = 0, glow = false;
-      if (key === "shield") {
-        cdFrac = this.player.shieldHp > 0 ? 0 :
-          Math.max(0, (this.player.shieldCd - (t - this.player.shieldLastUsed)) / this.player.shieldCd);
-        glow = this.player.shieldHp > 0;
-      } else if (key === "strike") {
-        cdFrac = Math.max(0, (this.player.strikeCd - (t - this.player.strikeLastUsed)) / this.player.strikeCd);
-        glow = this.player.strikePending || this.player.isStriking;
-      } else if (key === "lockon") {
-        cdFrac = Math.max(0, (this.player.lockonCd - (t - this.player.lockonLastUsed)) / this.player.lockonCd);
-        glow = this.player.lockonActive || this.player.lockonSelecting;
-      } else if (key === "fake") {
-        cdFrac = this.player.fakeActive ? 0 :
-          Math.max(0, (this.player.fakeCd - (t - this.player.fakeLastUsed)) / this.player.fakeCd);
-        glow = this.player.fakeActive;
-      } else if (key === "help") {
-        cdFrac = this.player.helpActive ? 0 :
-          Math.max(0, (this.player.helpCd - (t - this.player.helpLastUsed)) / this.player.helpCd);
-        glow = this.player.helpActive;
-      }
+      if (key === "shield") { cdFrac = this.player.shieldHp > 0 ? 0 : Math.max(0, (this.player.shieldCd - (t-this.player.shieldLastUsed))/this.player.shieldCd); glow = this.player.shieldHp > 0; }
+      else if (key === "strike") { cdFrac = Math.max(0, (this.player.strikeCd - (t-this.player.strikeLastUsed))/this.player.strikeCd); glow = this.player.strikePending || this.player.isStriking; }
+      else if (key === "lockon") { cdFrac = Math.max(0, (this.player.lockonCd - (t-this.player.lockonLastUsed))/this.player.lockonCd); glow = this.player.lockonActive || this.player.lockonSelecting; }
+      else if (key === "fake") { cdFrac = this.player.fakeActive ? 0 : Math.max(0, (this.player.fakeCd - (t-this.player.fakeLastUsed))/this.player.fakeCd); glow = this.player.fakeActive; }
+      else if (key === "help") { cdFrac = this.player.helpActive ? 0 : Math.max(0, (this.player.helpCd - (t-this.player.helpLastUsed))/this.player.helpCd); glow = this.player.helpActive; }
       this.drawSkillButton(btn, key, this.skillLabel(key), cdFrac, this.touchesValueHas(key), glow);
     }
-
     this.drawHud();
-
     if (!this.player.isAlive) {
       ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(0, 0, W, H);
-      ctx.fillStyle = "#ff2e63"; ctx.font = "bold 28px Helvetica";
-      ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      ctx.fillText("GAME OVER", W / 2, H / 2 - 40);
+      ctx.fillStyle = "#ff2e63"; ctx.font = "bold 28px Helvetica"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("GAME OVER", W/2, H/2-40);
       ctx.font = "16px Helvetica"; ctx.fillStyle = "#ddd";
-      ctx.fillText(`Mode: ${this.difficulty.name}  |  Marks: ${this.player.score}  |  Kills: ${this.player.kills}`,
-                   W / 2, H / 2);
+      ctx.fillText(`Marks: ${this.player.score}  |  Kills: ${this.player.kills}`, W/2, H/2);
       ctx.fillStyle = "#00fff5";
-      ctx.fillText("Press any key / tap to return to mode select", W / 2, H / 2 + 40);
+      ctx.fillText("按任意键 / 点击返回", W/2, H/2+40);
       ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
     }
   }
-
-  skillLabel(key) {
-    return { shield: "Q", strike: "F", lockon: "R", fake: "G", help: "H" }[key] || key[0].toUpperCase();
-  }
-
-  touchesValueHas(val) {
-    for (const v of this.touches.values()) if (v === val) return true;
-    return false;
-  }
-
+  skillLabel(key) { return {shield:"Q", strike:"F", lockon:"R", fake:"G", help:"H"}[key] || key[0].toUpperCase(); }
+  touchesValueHas(val) { for (const v of this.touches.values()) if (v === val) return true; return false; }
   drawJoystick(j, activeColor, inactiveColor) {
-    ctx.strokeStyle = j.active ? activeColor : inactiveColor;
-    ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.arc(j.cx, j.cy, j.r, 0, Math.PI * 2); ctx.stroke();
-    if (j.active) {
-      ctx.beginPath(); ctx.moveTo(j.cx, j.cy); ctx.lineTo(j.kx, j.ky);
-      ctx.strokeStyle = activeColor; ctx.stroke();
-    }
-    const kr = j.r * 0.35;
-    ctx.beginPath(); ctx.arc(j.kx, j.ky, kr, 0, Math.PI * 2);
+    ctx.strokeStyle = j.active ? activeColor : inactiveColor; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(j.cx, j.cy, j.r, 0, Math.PI*2); ctx.stroke();
+    if (j.active) { ctx.beginPath(); ctx.moveTo(j.cx, j.cy); ctx.lineTo(j.kx, j.ky); ctx.strokeStyle = activeColor; ctx.stroke(); }
+    const kr = j.r*0.35;
+    ctx.beginPath(); ctx.arc(j.kx, j.ky, kr, 0, Math.PI*2);
     ctx.fillStyle = j.active ? activeColor : inactiveColor; ctx.fill();
   }
-
   drawSkillButton(btn, symbol, label, cdFrac, pressed, activeGlow = false) {
     const r = this.skillR;
-    ctx.beginPath(); ctx.arc(btn.cx, btn.cy, r, 0, Math.PI * 2);
+    ctx.beginPath(); ctx.arc(btn.cx, btn.cy, r, 0, Math.PI*2);
     ctx.fillStyle = pressed ? "#2a2a4e" : "#1a1a2e"; ctx.fill();
-    ctx.strokeStyle = activeGlow ? "#00ff88" : "#555";
-    ctx.lineWidth = activeGlow ? 3 : 2;
-    ctx.stroke();
-
+    ctx.strokeStyle = activeGlow ? "#00ff88" : "#555"; ctx.lineWidth = activeGlow ? 3 : 2; ctx.stroke();
     if (cdFrac > 0) {
       ctx.beginPath(); ctx.moveTo(btn.cx, btn.cy);
-      ctx.arc(btn.cx, btn.cy, r, -Math.PI / 2, -Math.PI / 2 + cdFrac * Math.PI * 2);
+      ctx.arc(btn.cx, btn.cy, r, -Math.PI/2, -Math.PI/2 + cdFrac*Math.PI*2);
       ctx.closePath(); ctx.fillStyle = "rgba(11,12,16,0.85)"; ctx.fill();
     }
     ctx.save(); ctx.globalAlpha = 0.55; ctx.fillStyle = "#dddddd";
-    const s = r * 0.5;
+    const s = r*0.5;
     if (symbol === "rocket") {
       ctx.beginPath();
-      ctx.moveTo(btn.cx, btn.cy - s);
-      ctx.lineTo(btn.cx + s * 0.5, btn.cy);
-      ctx.lineTo(btn.cx + s * 0.3, btn.cy + s * 0.6);
-      ctx.lineTo(btn.cx - s * 0.3, btn.cy + s * 0.6);
-      ctx.lineTo(btn.cx - s * 0.5, btn.cy);
-      ctx.closePath(); ctx.fill();
+      ctx.moveTo(btn.cx, btn.cy-s); ctx.lineTo(btn.cx+s*0.5, btn.cy);
+      ctx.lineTo(btn.cx+s*0.3, btn.cy+s*0.6); ctx.lineTo(btn.cx-s*0.3, btn.cy+s*0.6);
+      ctx.lineTo(btn.cx-s*0.5, btn.cy); ctx.closePath(); ctx.fill();
     } else if (symbol === "power") {
       ctx.beginPath();
       for (let i = 0; i < 8; i++) {
-        const a = i * Math.PI / 4;
-        const rr = r * (i % 2 === 0 ? 0.5 : 0.25);
-        const px = btn.cx + Math.cos(a) * rr;
-        const py = btn.cy + Math.sin(a) * rr;
+        const a = i*Math.PI/4; const rr = r*(i%2===0?0.5:0.25);
+        const px = btn.cx+Math.cos(a)*rr, py = btn.cy+Math.sin(a)*rr;
         if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
       }
       ctx.closePath(); ctx.fill();
     } else if (symbol === "shield") {
       ctx.beginPath();
-      ctx.moveTo(btn.cx, btn.cy - s);
-      ctx.lineTo(btn.cx + s * 0.7, btn.cy - s * 0.4);
-      ctx.lineTo(btn.cx + s * 0.6, btn.cy + s * 0.4);
-      ctx.lineTo(btn.cx, btn.cy + s);
-      ctx.lineTo(btn.cx - s * 0.6, btn.cy + s * 0.4);
-      ctx.lineTo(btn.cx - s * 0.7, btn.cy - s * 0.4);
+      ctx.moveTo(btn.cx, btn.cy-s); ctx.lineTo(btn.cx+s*0.7, btn.cy-s*0.4);
+      ctx.lineTo(btn.cx+s*0.6, btn.cy+s*0.4); ctx.lineTo(btn.cx, btn.cy+s);
+      ctx.lineTo(btn.cx-s*0.6, btn.cy+s*0.4); ctx.lineTo(btn.cx-s*0.7, btn.cy-s*0.4);
       ctx.closePath(); ctx.fill();
     } else if (symbol === "strike") {
       ctx.beginPath();
-      ctx.moveTo(btn.cx, btn.cy - s);
-      ctx.lineTo(btn.cx + s * 0.4, btn.cy);
-      ctx.lineTo(btn.cx, btn.cy + s);
-      ctx.lineTo(btn.cx - s * 0.4, btn.cy);
+      ctx.moveTo(btn.cx, btn.cy-s); ctx.lineTo(btn.cx+s*0.4, btn.cy);
+      ctx.lineTo(btn.cx, btn.cy+s); ctx.lineTo(btn.cx-s*0.4, btn.cy);
       ctx.closePath(); ctx.fill();
     } else if (symbol === "lockon") {
-      ctx.beginPath(); ctx.arc(btn.cx, btn.cy, s * 0.7, 0, Math.PI * 2); ctx.stroke();
-      ctx.beginPath(); ctx.arc(btn.cx, btn.cy, s * 0.3, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(btn.cx, btn.cy, s*0.7, 0, Math.PI*2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(btn.cx, btn.cy, s*0.3, 0, Math.PI*2); ctx.fill();
     } else if (symbol === "fake") {
-      ctx.beginPath(); ctx.arc(btn.cx, btn.cy, s * 0.8, 0, Math.PI * 2); ctx.stroke();
-      ctx.beginPath(); ctx.arc(btn.cx, btn.cy, s * 0.5, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(btn.cx, btn.cy, s*0.8, 0, Math.PI*2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(btn.cx, btn.cy, s*0.5, 0, Math.PI*2); ctx.stroke();
     } else if (symbol === "help") {
       for (let i = 0; i < 3; i++) {
-        const a = i * Math.PI * 2 / 3;
-        const px = btn.cx + Math.cos(a) * s * 0.6;
-        const py = btn.cy + Math.sin(a) * s * 0.6;
-        ctx.beginPath(); ctx.arc(px, py, s * 0.25, 0, Math.PI * 2); ctx.fill();
+        const a = i*Math.PI*2/3;
+        const px = btn.cx+Math.cos(a)*s*0.6, py = btn.cy+Math.sin(a)*s*0.6;
+        ctx.beginPath(); ctx.arc(px, py, s*0.25, 0, Math.PI*2); ctx.fill();
       }
     }
     ctx.restore();
-    ctx.fillStyle = "#aaa"; ctx.font = "10px Helvetica";
-    ctx.textAlign = "center";
-    ctx.fillText(label, btn.cx, btn.cy + r + 14);
-    ctx.textAlign = "left";
+    ctx.fillStyle = "#aaa"; ctx.font = "10px Helvetica"; ctx.textAlign = "center";
+    ctx.fillText(label, btn.cx, btn.cy+r+14); ctx.textAlign = "left";
   }
-
   drawHud() {
     const t = now();
     const dsLeft = this.player.dashCd - (t - this.player.lastDashTime);
     const lines = [];
-    lines.push(`[${this.difficulty.name}]  HP: ${this.player.hp}/${this.player.maxHp}  |  Marks: ${this.player.score}  |  Kills: ${this.player.kills}`);
-    if (this.touchMode) {
-      lines.push("TOUCH — L: move | R: aim+fire | Tap icons for skills");
-    } else {
-      lines.push("[LMB]Fire [E]Rocket [C]Beam [Q]Shield [F]Strike [R]Lockon [G]Fake [H]Help");
-      lines.push(`[Space]Dash: ${dsLeft <= 0 ? "READY" : dsLeft.toFixed(1) + "s"}`);
-    }
+    lines.push(`[${this.difficulty.name}]${this.pvpMode?" PVP":""}  HP: ${this.player.hp}/${this.player.maxHp}  |  Marks: ${this.player.score}`);
+    if (this.touchMode) lines.push("触屏 — 左摇杆移动 | 右摇杆瞄准射击 | 右上角图标使用技能");
+    else lines.push("[鼠标左键]射击 [E]火箭 [C]光束 [Q]护盾 [F]冲撞 [R]锁定 [G]假影 [H]助手");
     ctx.fillStyle = "#e0e0e0"; ctx.font = "13px Helvetica";
     ctx.textAlign = "left"; ctx.textBaseline = "top";
-    lines.forEach((line, i) => ctx.fillText(line, 12, 12 + i * 20));
+    lines.forEach((line, i) => ctx.fillText(line, 12, 12 + i*20));
   }
 
+  // ---- 大厅 ----
+  drawLobby() {
+    this.buttons = [];
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#ff2e63"; ctx.font = "bold 34px Helvetica";
+    ctx.fillText("TRIANGLE BATTLE ARENA", W/2, 100);
+    ctx.fillStyle = "#00fff5"; ctx.font = "18px Helvetica";
+    ctx.fillText("联机大厅", W/2, 140);
+
+    const bw = 260, bh = 60;
+    const bx = (W-bw)/2, by = 200;
+    this.drawBtn(bx, by, bw, bh, "#06d6a0", "创建房间（作为房主）");
+    this.buttons.push({ x: bx, y: by, w: bw, h: bh, action: () => this.createRoom() });
+
+    const by2 = by + 80;
+    this.drawBtn(bx, by2, bw, bh, "#00fff5", "加入房间");
+    this.buttons.push({ x: bx, y: by2, w: bw, h: bh, action: () => this.joinRoomPrompt() });
+
+    const by3 = by2 + 80;
+    this.drawBtn(bx, by3, bw, bh, "#ff9f1c", "单机模式");
+    this.buttons.push({ x: bx, y: by3, w: bw, h: bh, action: () => { this.state = "control"; } });
+
+    ctx.fillStyle = "#666"; ctx.font = "12px Helvetica";
+    ctx.fillText("提示：创建房间后，把房间号发给朋友即可加入", W/2, by3 + 100);
+    ctx.fillText("联机功能使用 PeerJS（免费，无需注册）", W/2, by3 + 120);
+  }
+  joinRoomPrompt() {
+    const code = prompt("请输入房间号（房主的 ID）：");
+    if (code) { this.roomInput = code.trim(); this.joinRoom(); }
+  }
+  drawLobbyRoom() {
+    this.buttons = [];
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#00fff5"; ctx.font = "bold 28px Helvetica";
+    ctx.fillText("房间已创建", W/2, 80);
+    ctx.fillStyle = "#ffd166"; ctx.font = "16px Helvetica";
+    ctx.fillText("房间号（发给朋友）：", W/2, 130);
+    ctx.fillStyle = "#ffffff"; ctx.font = "bold 20px monospace";
+    ctx.fillText(this.roomCode || "", W/2, 165);
+
+    ctx.fillStyle = "#aaa"; ctx.font = "14px Helvetica";
+    const peers = Object.keys(this.net.connections);
+    ctx.fillText(`已连接玩家：${peers.length + 1} 人`, W/2, 210);
+
+    const bw = 260, bh = 55;
+    const bx = (W-bw)/2, by = 260;
+
+    this.drawBtn(bx, by, bw, bh, "#06d6a0", "开始合作模式");
+    this.buttons.push({ x: bx, y: by, w: bw, h: bh, action: () => {
+      this.startGame(this.touchMode, "battlers", false);
+    }});
+
+    const by2 = by + 75;
+    this.drawBtn(bx, by2, bw, bh, "#ff2e63", "开始 PVP 友战");
+    this.buttons.push({ x: bx, y: by2, w: bw, h: bh, action: () => {
+      this.startGame(this.touchMode, "master", true);
+    }});
+
+    const by3 = by2 + 75;
+    this.drawBtn(bx, by3, bw, bh, "#888888", "离开房间");
+    this.buttons.push({ x: bx, y: by3, w: bw, h: bh, action: () => {
+      this.net.close();
+      this.remotePlayers = {};
+      this.state = "lobby";
+    }});
+  }
+  drawBtn(x, y, w, h, color, label) {
+    ctx.fillStyle = "#1a1a2e"; ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.strokeRect(x, y, w, h);
+    ctx.fillStyle = color; ctx.font = "bold 16px Helvetica";
+    ctx.textAlign = "center";
+    ctx.fillText(label, x + w/2, y + h/2 + 6);
+    ctx.textAlign = "left";
+  }
   drawControlSelect() {
     this.buttons = [];
     ctx.textAlign = "center";
     ctx.fillStyle = "#ff2e63"; ctx.font = "bold 34px Helvetica";
-    ctx.fillText("TRIANGLE BATTLE ARENA", W / 2, 120);
-    ctx.fillStyle = "#e0e0e0"; ctx.font = "18px Helvetica";
-    ctx.fillText("Step 1 / 2 — Select Control Mode", W / 2, 165);
-
-    const bw = Math.min(320, W * 0.36), bh = 100;
-    const kbX = W / 2 - bw - 30, kbY = 230;
-    this.drawChoiceBox(kbX, kbY, bw, bh, "#ff2e63", "KEYBOARD + MOUSE",
-      ["WASD / Space — move & dash", "Left Click fire · E rocket",
-       "C beam · Q shield · F strike · R lockon · G fake · H help"]);
-    this.buttons.push({ x: kbX, y: kbY, w: bw, h: bh,
-      action: () => { this.touchMode = false; this.state = "difficulty"; } });
-
-    const tcX = W / 2 + 30, tcY = 230;
-    this.drawChoiceBox(tcX, tcY, bw, bh, "#00fff5", "TOUCHSCREEN",
-      ["Left joystick — move", "Right joystick — aim & fire", "Tap icons top-right for skills"]);
-    this.buttons.push({ x: tcX, y: tcY, w: bw, h: bh,
-      action: () => { this.touchMode = true; this.state = "difficulty"; } });
+    ctx.fillText("控制模式", W/2, 120);
+    const bw = Math.min(320, W*0.36), bh = 100;
+    const kbX = W/2 - bw - 30, kbY = 230;
+    this.drawChoiceBox(kbX, kbY, bw, bh, "#ff2e63", "键盘 + 鼠标",
+      ["WASD 移动", "左键射击 · E 火箭", "C 光束 · Q 护盾 · F 冲撞 · R 锁定 · G 假影 · H 助手"]);
+    this.buttons.push({ x: kbX, y: kbY, w: bw, h: bh, action: () => { this.touchMode = false; this.state = "difficulty"; } });
+    const tcX = W/2 + 30, tcY = 230;
+    this.drawChoiceBox(tcX, tcY, bw, bh, "#00fff5", "触屏",
+      ["左摇杆移动", "右摇杆瞄准射击", "右上角图标使用技能"]);
+    this.buttons.push({ x: tcX, y: tcY, w: bw, h: bh, action: () => { this.touchMode = true; this.state = "difficulty"; } });
   }
-
   drawChoiceBox(x, y, w, h, borderColor, title, sublines) {
     ctx.fillStyle = "#1a1a2e"; ctx.fillRect(x, y, w, h);
     ctx.strokeStyle = borderColor; ctx.lineWidth = 2; ctx.strokeRect(x, y, w, h);
     ctx.fillStyle = borderColor; ctx.font = "bold 16px Helvetica";
-    ctx.fillText(title, x + w / 2, y + 32);
+    ctx.textAlign = "center"; ctx.fillText(title, x+w/2, y+32);
     ctx.fillStyle = "#888"; ctx.font = "11px Helvetica";
-    sublines.forEach((s, i) => ctx.fillText(s, x + w / 2, y + 56 + i * 16));
+    sublines.forEach((s, i) => ctx.fillText(s, x+w/2, y+56+i*16));
+    ctx.textAlign = "left";
   }
-
   drawDifficultySelect() {
     this.buttons = [];
     ctx.textAlign = "center";
     ctx.fillStyle = "#00fff5"; ctx.font = "bold 30px Helvetica";
-    ctx.fillText("Step 2 / 2 — Select Difficulty", W / 2, 60);
+    ctx.fillText("选择难度", W/2, 60);
     ctx.fillStyle = "#888"; ctx.font = "13px Helvetica";
-    ctx.fillText(`Control: ${this.touchMode ? "TOUCHSCREEN" : "KEYBOARD + MOUSE"}  |  Marks: ${this.marks}`, W / 2, 82);
-
+    ctx.fillText(`控制: ${this.touchMode?"触屏":"键盘+鼠标"} | 分数: ${this.marks}`, W/2, 82);
     const keys = ["news", "battlers", "master", "hell"];
     const gap = 16;
-    const marginX = Math.max(15, W * 0.03);
-    const usable = W - marginX * 2 - gap * 3;
-    const bw = Math.min(220, usable / 4);
-    const bh = Math.min(200, H * 0.38);
-    const totalW = bw * 4 + gap * 3;
-    const startX = (W - totalW) / 2;
-    const startY = Math.min(H * 0.2, 110);
-
+    const marginX = Math.max(15, W*0.03);
+    const usable = W - marginX*2 - gap*3;
+    const bw = Math.min(220, usable/4);
+    const bh = Math.min(200, H*0.38);
+    const totalW = bw*4 + gap*3;
+    const startX = (W-totalW)/2;
+    const startY = Math.min(H*0.2, 110);
     keys.forEach((key, idx) => {
       const d = DIFFICULTIES[key];
-      const x = startX + idx * (bw + gap);
+      const x = startX + idx*(bw+gap);
       this.drawDifficultyBox(x, startY, bw, bh, d);
-      this.buttons.push({ x, y: startY, w: bw, h: bh,
-        action: () => this.startGame(this.touchMode, key) });
+      this.buttons.push({ x, y: startY, w: bw, h: bh, action: () => this.startGame(this.touchMode, key, false) });
     });
-
     const shopW = 220, shopH = 60;
-    const shopX = (W - shopW) / 2;
+    const shopX = (W-shopW)/2;
     const shopY = startY + bh + 30;
-    ctx.fillStyle = "#2a1a3e"; ctx.fillRect(shopX, shopY, shopW, shopH);
-    ctx.strokeStyle = "#c77dff"; ctx.lineWidth = 2; ctx.strokeRect(shopX, shopY, shopW, shopH);
-    ctx.fillStyle = "#c77dff"; ctx.font = "bold 20px Helvetica";
-    ctx.fillText("🛒  SHOP", shopX + shopW / 2, shopY + 28);
-    ctx.fillStyle = "#888"; ctx.font = "11px Helvetica";
-    ctx.fillText("Exchange marks for skills", shopX + shopW / 2, shopY + 48);
-    this.buttons.push({ x: shopX, y: shopY, w: shopW, h: shopH,
-      action: () => { this.state = "shop"; } });
+    this.drawBtn(shopX, shopY, shopW, shopH, "#c77dff", "🛒 商店");
+    this.buttons.push({ x: shopX, y: shopY, w: shopW, h: shopH, action: () => { this.state = "shop"; } });
   }
-
   drawDifficultyBox(x, y, w, h, d) {
     ctx.fillStyle = "#15152a"; ctx.fillRect(x, y, w, h);
     ctx.strokeStyle = d.color; ctx.lineWidth = 3; ctx.strokeRect(x, y, w, h);
-    ctx.fillStyle = d.color; ctx.font = "bold 22px Helvetica";
-    ctx.fillText(d.name, x + w / 2, y + 42);
+    ctx.fillStyle = d.color; ctx.font = "bold 22px Helvetica"; ctx.textAlign = "center";
+    ctx.fillText(d.name, x+w/2, y+42);
     ctx.fillStyle = "#aaa"; ctx.font = "12px Helvetica";
-    ctx.fillText(d.subtitle, x + w / 2, y + 62);
-    ctx.fillStyle = "#ccc"; ctx.font = "11px Helvetica";
-    const descLines = this.wrapText(d.desc, w - 20);
-    descLines.forEach((line, i) => ctx.fillText(line, x + w / 2, y + 88 + i * 14));
+    ctx.fillText(d.subtitle, x+w/2, y+62);
+    ctx.textAlign = "left";
   }
-
   drawShop() {
     this.buttons = [];
     ctx.textAlign = "center";
     ctx.fillStyle = "#c77dff"; ctx.font = "bold 30px Helvetica";
-    ctx.fillText("SHOP", W / 2, 50);
+    ctx.fillText("商店", W/2, 50);
     ctx.fillStyle = "#aaa"; ctx.font = "14px Helvetica";
-    ctx.fillText(`Marks: ${this.marks}  |  Equipped: ${this.equippedSkills.length}/${MAX_EQUIPPED}`, W / 2, 76);
-
+    ctx.fillText(`分数: ${this.marks}  |  已装备: ${this.equippedSkills.length}/${MAX_EQUIPPED}`, W/2, 76);
     const keys = ["shield", "strike", "lockon", "fake", "help"];
     const gap = 14;
-    const marginX = Math.max(12, W * 0.02);
-    const usable = W - marginX * 2 - gap * 4;
-    const bw = Math.min(170, usable / 5);
-    const bh = Math.min(260, H * 0.5);
-    const totalW = bw * 5 + gap * 4;
-    const startX = (W - totalW) / 2;
-    const startY = Math.min(H * 0.22, 100);
-
+    const marginX = Math.max(12, W*0.02);
+    const usable = W - marginX*2 - gap*4;
+    const bw = Math.min(170, usable/5);
+    const bh = Math.min(260, H*0.5);
+    const totalW = bw*5 + gap*4;
+    const startX = (W-totalW)/2;
+    const startY = Math.min(H*0.22, 100);
     keys.forEach((key, idx) => {
       const s = SKILLS[key];
-      const x = startX + idx * (bw + gap);
+      const x = startX + idx*(bw+gap);
       const owned = this.ownedSkills[key];
       const equipped = this.equippedSkills.includes(key);
       const canAfford = this.marks >= s.cost;
-
       ctx.fillStyle = equipped ? "#1a3a2a" : (owned ? "#1a2a3a" : "#15152a");
       ctx.fillRect(x, startY, bw, bh);
       ctx.strokeStyle = equipped ? "#06d6a0" : (owned ? "#00fff5" : "#c77dff");
       ctx.lineWidth = 3; ctx.strokeRect(x, startY, bw, bh);
-
-      this.drawSkillIcon(x + bw / 2, startY + 70, 35, key);
-
+      this.drawSkillIcon(x+bw/2, startY+70, 35, key);
       ctx.fillStyle = "#c77dff"; ctx.font = "bold 16px Helvetica";
-      ctx.fillText(s.name, x + bw / 2, startY + bh - 90);
-
+      ctx.fillText(s.name, x+bw/2, startY+bh-90);
       if (owned) {
         if (equipped) {
           ctx.fillStyle = "#06d6a0"; ctx.font = "bold 12px Helvetica";
-          ctx.fillText("✓ EQUIPPED", x + bw / 2, startY + bh - 60);
-          ctx.fillStyle = "#888"; ctx.font = "10px Helvetica";
-          ctx.fillText("tap to unequip", x + bw / 2, startY + bh - 45);
-          this.buttons.push({ x, y: startY, w: bw, h: bh,
-            action: () => {
-              this.equippedSkills = this.equippedSkills.filter(k => k !== key);
-            }});
+          ctx.fillText("✓ 已装备", x+bw/2, startY+bh-60);
+          this.buttons.push({ x, y: startY, w: bw, h: bh, action: () => {
+            this.equippedSkills = this.equippedSkills.filter(k => k !== key);
+          }});
         } else {
           ctx.fillStyle = "#00fff5"; ctx.font = "bold 12px Helvetica";
-          ctx.fillText("TAP TO EQUIP", x + bw / 2, startY + bh - 60);
-          this.buttons.push({ x, y: startY, w: bw, h: bh,
-            action: () => {
-              if (this.equippedSkills.length >= MAX_EQUIPPED) return;
-              this.equippedSkills.push(key);
-            }});
+          ctx.fillText("点击装备", x+bw/2, startY+bh-60);
+          this.buttons.push({ x, y: startY, w: bw, h: bh, action: () => {
+            if (this.equippedSkills.length >= MAX_EQUIPPED) return;
+            this.equippedSkills.push(key);
+          }});
         }
       } else {
-        ctx.fillStyle = canAfford ? "#ffd166" : "#666";
-        ctx.font = "bold 13px Helvetica";
-        ctx.fillText(`Buy — ${s.cost}`, x + bw / 2, startY + bh - 60);
+        ctx.fillStyle = canAfford ? "#ffd166" : "#666"; ctx.font = "bold 13px Helvetica";
+        ctx.fillText(`购买 — ${s.cost}`, x+bw/2, startY+bh-60);
         if (canAfford) {
-          this.buttons.push({ x, y: startY, w: bw, h: bh,
-            action: () => {
-              if (this.marks >= s.cost && !this.ownedSkills[key]) {
-                this.marks -= s.cost;
-                this.ownedSkills[key] = true;
-              }
-            }});
+          this.buttons.push({ x, y: startY, w: bw, h: bh, action: () => {
+            if (this.marks >= s.cost && !this.ownedSkills[key]) {
+              this.marks -= s.cost; this.ownedSkills[key] = true;
+            }
+          }});
         }
       }
     });
-
-    if (this.equippedSkills.length >= MAX_EQUIPPED) {
-      ctx.fillStyle = "#ff9f1c"; ctx.font = "12px Helvetica";
-      ctx.fillText("Max equipped — unequip a skill to equip another", W / 2, startY + bh + 15);
-    }
-
     const backW = 180, backH = 50;
-    const backX = (W - backW) / 2;
-    const backY = startY + bh + 40;
-    ctx.fillStyle = "#1a1a2e"; ctx.fillRect(backX, backY, backW, backH);
-    ctx.strokeStyle = "#ff2e63"; ctx.lineWidth = 2; ctx.strokeRect(backX, backY, backW, backH);
-    ctx.fillStyle = "#ff2e63"; ctx.font = "bold 16px Helvetica";
-    ctx.fillText("← BACK", backX + backW / 2, backY + 32);
-    this.buttons.push({ x: backX, y: backY, w: backW, h: backH,
-      action: () => { this.state = "difficulty"; } });
+    const backX = (W-backW)/2, backY = startY+bh+40;
+    this.drawBtn(backX, backY, backW, backH, "#ff2e63", "← 返回");
+    this.buttons.push({ x: backX, y: backY, w: backW, h: backH, action: () => { this.state = "difficulty"; } });
   }
-
   drawSkillIcon(cx, cy, r, key) {
     ctx.save();
     ctx.strokeStyle = "#dddddd"; ctx.fillStyle = "#dddddd"; ctx.lineWidth = 3;
     const s = r;
     if (key === "shield") {
       ctx.beginPath();
-      ctx.moveTo(cx, cy - s);
-      ctx.lineTo(cx + s * 0.7, cy - s * 0.4);
-      ctx.lineTo(cx + s * 0.6, cy + s * 0.4);
-      ctx.lineTo(cx, cy + s);
-      ctx.lineTo(cx - s * 0.6, cy + s * 0.4);
-      ctx.lineTo(cx - s * 0.7, cy - s * 0.4);
+      ctx.moveTo(cx, cy-s); ctx.lineTo(cx+s*0.7, cy-s*0.4); ctx.lineTo(cx+s*0.6, cy+s*0.4);
+      ctx.lineTo(cx, cy+s); ctx.lineTo(cx-s*0.6, cy+s*0.4); ctx.lineTo(cx-s*0.7, cy-s*0.4);
       ctx.closePath(); ctx.fill();
     } else if (key === "strike") {
       ctx.beginPath();
-      ctx.moveTo(cx, cy - s);
-      ctx.lineTo(cx + s * 0.4, cy);
-      ctx.lineTo(cx, cy + s);
-      ctx.lineTo(cx - s * 0.4, cy);
+      ctx.moveTo(cx, cy-s); ctx.lineTo(cx+s*0.4, cy); ctx.lineTo(cx, cy+s); ctx.lineTo(cx-s*0.4, cy);
       ctx.closePath(); ctx.fill();
     } else if (key === "lockon") {
-      ctx.beginPath(); ctx.arc(cx, cy, s * 0.7, 0, Math.PI * 2); ctx.stroke();
-      ctx.beginPath(); ctx.arc(cx, cy, s * 0.3, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath();
-      ctx.moveTo(cx - s * 1.2, cy); ctx.lineTo(cx - s * 0.6, cy);
-      ctx.moveTo(cx + s * 1.2, cy); ctx.lineTo(cx + s * 0.6, cy);
-      ctx.moveTo(cx, cy - s * 1.2); ctx.lineTo(cx, cy - s * 0.6);
-      ctx.moveTo(cx, cy + s * 1.2); ctx.lineTo(cx, cy + s * 0.6);
-      ctx.stroke();
+      ctx.beginPath(); ctx.arc(cx, cy, s*0.7, 0, Math.PI*2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(cx, cy, s*0.3, 0, Math.PI*2); ctx.fill();
     } else if (key === "fake") {
-      ctx.beginPath(); ctx.arc(cx, cy, s, 0, Math.PI * 2); ctx.stroke();
-      ctx.beginPath(); ctx.arc(cx, cy, s * 0.55, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(cx, cy, s, 0, Math.PI*2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(cx, cy, s*0.55, 0, Math.PI*2); ctx.stroke();
     } else if (key === "help") {
       for (let i = 0; i < 3; i++) {
-        const a = i * Math.PI * 2 / 3 - Math.PI / 2;
-        const px = cx + Math.cos(a) * s * 0.6;
-        const py = cy + Math.sin(a) * s * 0.6;
-        ctx.beginPath(); ctx.arc(px, py, s * 0.25, 0, Math.PI * 2); ctx.fill();
+        const a = i*Math.PI*2/3 - Math.PI/2;
+        const px = cx+Math.cos(a)*s*0.6, py = cy+Math.sin(a)*s*0.6;
+        ctx.beginPath(); ctx.arc(px, py, s*0.25, 0, Math.PI*2); ctx.fill();
       }
     }
     ctx.restore();
   }
-
-  wrapText(text, maxWidth) {
-    const lines = [];
-    let cur = "";
-    for (const ch of text) {
-      const test = cur + ch;
-      if (ctx.measureText(test).width > maxWidth && cur) {
-        lines.push(cur); cur = ch;
-      } else cur = test;
-    }
-    if (cur) lines.push(cur);
-    return lines;
-  }
 }
 
-// ===================== INPUT WIRING =====================
+// ===================== 事件绑定 =====================
 const game = new Game();
-
-function idFor(e) { return (e.pointerType === "touch" || e.pointerType === "pen") ? "t" + e.pointerId : "mouse"; }
+function idFor(e) { return (e.pointerType === "touch" || e.pointerType === "pen") ? "t"+e.pointerId : "mouse"; }
 function getXY(e) { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
-
 canvas.addEventListener("pointerdown", e => {
   e.preventDefault();
   const [x, y] = getXY(e);
   game.onPointerDown(idFor(e), x, y);
   if (e.pointerType === "mouse") game.mousePos = [x, y];
 }, { passive: false });
-
 canvas.addEventListener("pointermove", e => {
-  const [x, y] = getXY(e);
-  game.onPointerMove(idFor(e), x, y);
+  const [x, y] = getXY(e); game.onPointerMove(idFor(e), x, y);
 }, { passive: false });
-
-canvas.addEventListener("pointerup",     e => { game.onPointerUp(idFor(e)); }, { passive: false });
+canvas.addEventListener("pointerup", e => { game.onPointerUp(idFor(e)); }, { passive: false });
 canvas.addEventListener("pointercancel", e => { game.onPointerUp(idFor(e)); }, { passive: false });
-
 canvas.addEventListener("touchstart", e => e.preventDefault(), { passive: false });
-canvas.addEventListener("touchmove",  e => e.preventDefault(), { passive: false });
-
+canvas.addEventListener("touchmove", e => e.preventDefault(), { passive: false });
 window.addEventListener("keydown", e => {
   game.onKey(e.key, true);
   if ([" ", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(e.key.toLowerCase())) e.preventDefault();
 });
 window.addEventListener("keyup", e => game.onKey(e.key, false));
-
 canvas.addEventListener("contextmenu", e => {
   e.preventDefault();
   if (game.state === "playing" && !game.touchMode && game.player && game.player.isAlive && !game.player.isStriking) {
@@ -2173,7 +2033,7 @@ canvas.addEventListener("contextmenu", e => {
   }
 });
 
-// ===================== MAIN LOOP =====================
+// ===================== 主循环 =====================
 let last = performance.now();
 function loop(t) {
   last = t;
@@ -2186,3 +2046,5 @@ requestAnimationFrame(loop);
 </script>
 </body>
 </html>
+          
+  
