@@ -749,6 +749,7 @@ class GreenTriangle {
     drawHpBar(this.x,this.y,this.hp,this.maxHp);
   }
 }
+
 const DIFFICULTIES = {
   news: {
     name: "NEWS", playerHp: 20,
@@ -1798,8 +1799,22 @@ function pointerXY(event) {
   return [event.clientX - rect.left, event.clientY - rect.top];
 }
 
+// Automatically enable touch controls the first time a touch is detected.
 canvas.addEventListener("pointerdown", event => {
   event.preventDefault();
+
+  if (event.pointerType === "touch" && !game.touchMode) {
+    game.touchMode = true;
+    game.deviceMode = "mobile";
+    game.isShooting = false;
+    game.touches.clear();
+    game.leftMoveDir = [0, 0];
+    game.rightFiring = false;
+    game.lJoy.active = false;
+    game.rJoy.active = false;
+    game.setupJoysticks();
+  }
+
   const [x, y] = pointerXY(event);
   game.onPointerDown(pointerId(event), x, y);
 }, { passive: false });
