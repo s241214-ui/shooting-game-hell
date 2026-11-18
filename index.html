@@ -1,13 +1,12 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-Hant">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Triangle Battle Arena</title>
 <style>
 *{box-sizing:border-box}
-html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#0b0c10;
-  color:#fff;font-family:Arial,sans-serif;touch-action:none;user-select:none}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#0b0c10;color:#fff;font-family:Arial,sans-serif;touch-action:none;user-select:none}
 canvas{display:block;width:100%;height:100%;touch-action:none}
 </style>
 </head>
@@ -16,9 +15,17 @@ canvas{display:block;width:100%;height:100%;touch-action:none}
 <script>
 "use strict";
 
-const canvas=document.querySelector("#game"),ctx=canvas.getContext("2d");
+const canvas=document.querySelector("#game");
+const ctx=canvas.getContext("2d");
 let W=innerWidth,H=innerHeight,DPR=1,game;
+
 const SPEED=1.7;
+const DIFF={
+  NEWS:{yellow:0,purple:3,green:2},
+  BATTLERS:{yellow:0,purple:5,green:3},
+  MASTER:{yellow:2,purple:0,green:4},
+  HELL:{yellow:1,purple:0,green:0}
+};
 const SKILLS={
   shield:{name:"Shield",cost:300,key:"Q",color:"#58a6ff"},
   strike:{name:"Strike",cost:500,key:"E",color:"#ff4d6d"},
@@ -26,13 +33,8 @@ const SKILLS={
   fake:{name:"Fake",cost:400,key:"T",color:"#c77dff"},
   help:{name:"Helper",cost:600,key:"Y",color:"#06d6a0"}
 };
-const DIFF={
-  NEWS:{yellow:0,purple:3,green:2},
-  BATTLERS:{yellow:0,purple:5,green:3},
-  MASTER:{yellow:2,purple:0,green:4},
-  HELL:{yellow:1,purple:0,green:0}
-};
-const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+const clamp=(n,a,b)=>Math.max(a,Math.min(b,n));
 const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
 const angleTo=(a,b)=>Math.atan2(b.y-a.y,b.x-a.x);
 
@@ -44,16 +46,18 @@ function resize(){
 }
 addEventListener("resize",resize);
 
-function text(s,x,y,size=16,color="#fff",align="center",weight="normal"){
-  ctx.fillStyle=color;ctx.font=`${weight} ${size}px Arial`;
-  ctx.textAlign=align;ctx.textBaseline="middle";ctx.fillText(s,x,y);
+function label(s,x,y,size=15,color="#fff",align="center",weight="normal"){
+  ctx.fillStyle=color;
+  ctx.font=`${weight} ${size}px Arial`;
+  ctx.textAlign=align;ctx.textBaseline="middle";
+  ctx.fillText(s,x,y);
 }
-function button(r,label,color="#00fff5",small=false){
+function drawButton(r,s,color="#00fff5",small=false){
   ctx.fillStyle="#171827";ctx.fillRect(r.x,r.y,r.w,r.h);
   ctx.strokeStyle=color;ctx.lineWidth=2;ctx.strokeRect(r.x,r.y,r.w,r.h);
-  text(label,r.x+r.w/2,r.y+r.h/2,small?11:14,"#fff","center","bold");
+  label(s,r.x+r.w/2,r.y+r.h/2,small?11:14,"#fff","center","bold");
 }
-function triangle(x,y,r,a,color){
+function drawTriangle(x,y,r,a,color){
   const ca=Math.cos(a),sa=Math.sin(a),px=-sa,py=ca;
   ctx.beginPath();
   ctx.moveTo(x+ca*r,y+sa*r);
@@ -62,17 +66,17 @@ function triangle(x,y,r,a,color){
   ctx.closePath();ctx.fillStyle=color;ctx.fill();
 }
 function healthBar(x,y,hp,max,color){
-  ctx.fillStyle="#363640";ctx.fillRect(x-21,y-32,42,5);
+  ctx.fillStyle="#373743";ctx.fillRect(x-21,y-32,42,5);
   ctx.fillStyle=color;ctx.fillRect(x-21,y-32,42*clamp(hp/max,0,1),5);
 }
-function closest(from,items){
-  let answer=null,best=Infinity;
-  for(const item of items){
-    if(!item.alive)continue;
-    const d=dist(from,item);
-    if(d<best){best=d;answer=item;}
+function closest(origin,items){
+  let best=null,bd=Infinity;
+  for(const obj of items){
+    if(!obj.alive)continue;
+    const d=dist(origin,obj);
+    if(d<bd){bd=d;best=obj;}
   }
-  return answer;
+  return best;
 }
 
 class Bullet{
@@ -80,8 +84,15 @@ class Bullet{
     Object.assign(this,{owner,x,y,a,damage,color,piercing,life:2,r:5});
     this.speed=speed*SPEED;
   }
-  update(dt){this.x+=Math.cos(this.a)*this.speed;this.y+=Math.sin(this.a)*this.speed;this.life-=dt;}
-  draw(){ctx.fillStyle=this.color;ctx.beginPath();ctx.arc(this.x,this.y,this.r,0,Math.PI*2);ctx.fill();}
+  update(dt){
+    this.x+=Math.cos(this.a)*this.speed;
+    this.y+=Math.sin(this.a)*this.speed;
+    this.life-=dt;
+  }
+  draw(){
+    ctx.fillStyle=this.color;
+    ctx.beginPath();ctx.arc(this.x,this.y,this.r,0,Math.PI*2);ctx.fill();
+  }
 }
 class Rocket{
   constructor(owner,target){
@@ -91,39 +102,39 @@ class Rocket{
   update(dt){
     this.life-=dt;
     if(this.target?.alive){
-      const desired=angleTo(this,this.target);
-      const d=Math.atan2(Math.sin(desired-this.a),Math.cos(desired-this.a));
-      this.a+=clamp(d,-.07,.07);
+      const aim=angleTo(this,this.target);
+      const delta=Math.atan2(Math.sin(aim-this.a),Math.cos(aim-this.a));
+      this.a+=clamp(delta,-.07,.07);
     }
-    this.x+=Math.cos(this.a)*this.speed;this.y+=Math.sin(this.a)*this.speed;
+    this.x+=Math.cos(this.a)*this.speed;
+    this.y+=Math.sin(this.a)*this.speed;
   }
-  draw(){triangle(this.x,this.y,10,this.a,"#7196ff");}
+  draw(){drawTriangle(this.x,this.y,10,this.a,"#7196ff");}
 }
 
 class Player{
-  constructor(id,x,y,color,keys){
+  constructor(id,x,y,color,controls){
     Object.assign(this,{
-      id,x,y,color,keys,a:0,hp:60,maxHp:60,alive:true,marks:0,r:18,
+      id,x,y,color,controls,a:0,hp:60,maxHp:60,alive:true,marks:0,r:18,
       skills:[],cooldowns:{},shield:0,dash:0,lastShot:0,
-      strongReady:0,rocketReady:0,touchMove:{x:0,y:0},
-      touchAim:null,touchFire:false
+      strongReady:0,rocketReady:0,touchMove:{x:0,y:0},touchAim:null,touchFire:false
     });
   }
-  has(skill){return this.skills.includes(skill);}
-  damage(n){
+  damage(amount){
     if(!this.alive)return;
-    const block=Math.min(this.shield,n);this.shield-=block;this.hp-=n-block;
+    const blocked=Math.min(this.shield,amount);
+    this.shield-=blocked;this.hp-=amount-blocked;
     if(this.hp<=0){this.hp=0;this.alive=false;}
   }
   update(dt,g){
     if(!this.alive)return;
-    let dx=this.touchMove.x,dy=this.touchMove.y;
 
+    let dx=this.touchMove.x,dy=this.touchMove.y;
     if(g.controlMode==="computer"){
-      if(g.keys[this.keys.up])dy--;
-      if(g.keys[this.keys.down])dy++;
-      if(g.keys[this.keys.left])dx--;
-      if(g.keys[this.keys.right])dx++;
+      if(g.keys[this.controls.up])dy--;
+      if(g.keys[this.controls.down])dy++;
+      if(g.keys[this.controls.left])dx--;
+      if(g.keys[this.controls.right])dx++;
     }
 
     const length=Math.hypot(dx,dy);
@@ -140,43 +151,39 @@ class Player{
       this.a=angleTo(this,g.mouseAim);
 
     const firing=this.touchFire||
-      (g.controlMode==="computer"&&(g.keys[this.keys.fire]||
-       (g.mouseDown&&g.activePlayer===this)));
-
+      (g.controlMode==="computer"&&(
+        g.keys[this.controls.fire]||(g.mouseDown&&g.activePlayer===this)
+      ));
     if(firing&&g.time-this.lastShot>.11){
       this.lastShot=g.time;
       g.bullets.push(new Bullet(this,this.x,this.y,this.a,12,1,this.color));
     }
   }
-  use(skill,g){
-    if(!this.alive||!this.has(skill))return;
-    if((this.cooldowns[skill]||0)>g.time)return;
+  useSkill(key,g){
+    if(!this.alive||!this.skills.includes(key))return;
+    if((this.cooldowns[key]||0)>g.time)return;
 
-    switch(skill){
-      case"shield":
-        this.shield=Math.min(20,this.shield+10);
-        this.cooldowns[skill]=g.time+20;g.say("Shield activated");break;
-      case"strike":{
-        const target=closest(this,g.targetsFor(this));
-        this.cooldowns[skill]=g.time+12;
-        if(target&&dist(this,target)<230){target.damage(8,this);g.say("Strike hit!");}
-        else g.say("No target nearby");
-        break;
+    if(key==="shield"){
+      this.shield=Math.min(20,this.shield+10);
+      this.cooldowns[key]=g.time+20;g.say("Shield activated");
+    }else if(key==="strike"){
+      const target=closest(this,g.targetsFor(this));
+      this.cooldowns[key]=g.time+12;
+      if(target&&dist(this,target)<230){
+        target.damage(8,this);g.say("Strike hit!");
+      }else g.say("No target nearby");
+    }else if(key==="lockon"){
+      const target=closest(this,g.targetsFor(this));
+      if(target){
+        this.a=angleTo(this,target);
+        g.bullets.push(new Bullet(this,this.x,this.y,this.a,15,4,"#f9c74f",true));
+        this.cooldowns[key]=g.time+5;g.say("Lock-on fired");
       }
-      case"lockon":{
-        const target=closest(this,g.targetsFor(this));
-        if(target){
-          this.a=angleTo(this,target);
-          g.bullets.push(new Bullet(this,this.x,this.y,this.a,15,4,"#f9c74f",true));
-          this.cooldowns[skill]=g.time+5;g.say("Lock-on fired");
-        }
-        break;
-      }
-      case"fake":
-        this.dash=.28;this.cooldowns[skill]=g.time+8;g.say("Dash activated");break;
-      case"help":
-        g.helpers.push({owner:this,x:this.x,y:this.y,a:this.a,life:12,lastShot:0});
-        this.cooldowns[skill]=g.time+25;g.say("Helper summoned");break;
+    }else if(key==="fake"){
+      this.dash=.28;this.cooldowns[key]=g.time+8;g.say("Dash!");
+    }else if(key==="help"){
+      g.helpers.push({owner:this,x:this.x,y:this.y,a:this.a,life:12,lastShot:0});
+      this.cooldowns[key]=g.time+25;g.say("Helper summoned");
     }
   }
   strongShot(g){
@@ -195,32 +202,38 @@ class Player{
 
 class Enemy{
   constructor(type,x,y,ownerId=null){
-    Object.assign(this,{type,x,y,ownerId,alive:true,a:0,lastShot:0,r:18,state:"waiting",chargeAt:0,chargeAngle:0});
+    Object.assign(this,{
+      type,x,y,ownerId,alive:true,a:0,lastShot:0,r:18,
+      state:"waiting",chargeAt:0,chargeAngle:0
+    });
     this.hp=this.maxHp=type==="yellow"?35:type==="purple"?6:4;
     if(type==="yellow")this.r=22;
     if(type==="purple")this.r=21;
   }
-  damage(n,player){
+  damage(amount,player){
     if(!this.alive)return;
-    this.hp-=n;
-    if(this.hp<=0){this.hp=0;this.alive=false;if(player)player.marks+=200;}
+    this.hp-=amount;
+    if(this.hp<=0){
+      this.hp=0;this.alive=false;
+      if(player)player.marks+=200;
+    }
   }
   update(dt,g){
     if(!this.alive)return;
     const players=g.players.filter(p=>p.alive&&p.id!==this.ownerId);
-    const target=closest(this,players);if(!target)return;
-    const t=g.time;this.a=angleTo(this,target);
+    const target=closest(this,players);
+    if(!target)return;
+    this.a=angleTo(this,target);
 
     if(this.type==="green"){
-      if(!this.chargeAt)this.chargeAt=t+2;
+      if(!this.chargeAt)this.chargeAt=g.time+2;
       if(this.state==="charging"){
-        // The charge keeps going past the player instead of sticking to them.
         this.x+=Math.cos(this.chargeAngle)*720*dt;
         this.y+=Math.sin(this.chargeAngle)*720*dt;
         if(this.x<-this.r||this.x>W+this.r||this.y<-this.r||this.y>H+this.r){
-          this.state="waiting";this.chargeAt=t+1.4;
+          this.state="waiting";this.chargeAt=g.time+1.4;
         }
-      }else if(t>=this.chargeAt){
+      }else if(g.time>=this.chargeAt){
         this.state="charging";
         this.chargeAngle=angleTo(this,target);
       }
@@ -230,24 +243,27 @@ class Enemy{
     const d=dist(this,target),speed=(this.type==="yellow"?2.4:1.7)*SPEED;
     if(d>260){this.x+=Math.cos(this.a)*speed;this.y+=Math.sin(this.a)*speed;}
     if(d<180){this.x-=Math.cos(this.a)*speed*.65;this.y-=Math.sin(this.a)*speed*.65;}
+
     const interval=this.type==="yellow"?.35:1.05;
-    if(t-this.lastShot>interval){
-      this.lastShot=t;
+    if(g.time-this.lastShot>interval){
+      this.lastShot=g.time;
       g.bullets.push(new Bullet(this,this.x,this.y,this.a,
         this.type==="yellow"?10:8,this.type==="yellow"?1:2,
         this.type==="yellow"?"#ffe66d":"#c77dff"));
     }
-    this.x=clamp(this.x,this.r,W-this.r);this.y=clamp(this.y,this.r,H-this.r);
+    this.x=clamp(this.x,this.r,W-this.r);
+    this.y=clamp(this.y,this.r,H-this.r);
   }
   draw(){
     if(this.type==="green"&&this.state!=="charging"){
-      ctx.strokeStyle="rgba(6,214,160,.38)";ctx.lineWidth=3;
+      ctx.strokeStyle="rgba(6,214,160,.4)";ctx.lineWidth=3;
       ctx.beginPath();ctx.moveTo(this.x,this.y);
-      ctx.lineTo(this.x+Math.cos(this.a)*120,this.y+Math.sin(this.a)*120);
+      ctx.lineTo(this.x+Math.cos(this.a)*130,this.y+Math.sin(this.a)*130);
       ctx.stroke();
     }
-    const color=this.type==="yellow"?"#f9d56e":this.type==="purple"?"#c77dff":"#06d6a0";
-    triangle(this.x,this.y,this.r,this.a,color);
+    const color=this.type==="yellow"?"#f9d56e":
+      this.type==="purple"?"#c77dff":"#06d6a0";
+    drawTriangle(this.x,this.y,this.r,this.a,color);
     healthBar(this.x,this.y,this.hp,this.maxHp,color);
   }
 }
@@ -258,84 +274,88 @@ class Game{
     this.players=[];this.enemies=[];this.bullets=[];this.rockets=[];this.helpers=[];
     this.keys={};this.time=0;this.last=performance.now()/1000;
     this.mouseDown=false;this.mouseAim=null;this.activePlayer=null;
-    this.isTouch=false;this.touchPointer=null;this.touchRole=null;
-    this.notice="";this.noticeUntil=0;this.buttons=[];this.shopButtons=[];
-    this.purchasedSkills=[];this.abilityButtons=[];this.layout();
+    this.pointerRoles=new Map();this.notice="";this.noticeUntil=0;
+    this.buttons=[];this.shopButtons=[];this.abilityButtons=[];
+    this.layout();
   }
   layout(){
     this.menu={x:Math.max(16,(W-Math.min(W-32,340))/2),y:H*.34,w:Math.min(W-32,340),h:48,g:10};
-    const r=Math.min(60,Math.max(45,W*.12));
-    this.leftCircle={x:r+20,y:H-r-22,r};
-    this.rightCircle={x:W-r-20,y:H-r-22,r};
+    const radius=Math.min(100,Math.max(72,W*.20));
+    this.leftCircle={x:radius+18,y:H-radius-20,r:radius};
+    this.rightCircle={x:W-radius-18,y:H-radius-20,r:radius};
     this.shopRect={x:W-112,y:10,w:102,h:38};
   }
-  say(s){this.notice=s;this.noticeUntil=this.time+2;}
+  say(message){this.notice=message;this.noticeUntil=this.time+2;}
+  spawnEnemy(type,ownerId=null){
+    this.enemies.push(new Enemy(type,Math.random()<.5?24:W-24,
+      40+Math.random()*Math.max(1,H-80),ownerId));
+  }
   start(mode,diff){
     this.mode=mode;this.diff=diff;this.state="playing";
     this.players=[];this.enemies=[];this.bullets=[];this.rockets=[];this.helpers=[];
-    const p1=new Player(1,W*.25,H*.5,"#ff2e63",{up:"w",down:"s",left:"a",right:"d",fire:"f"});
-    p1.skills=[...this.purchasedSkills];this.players.push(p1);
+    const p1=new Player(1,W*.25,H*.5,"#ff2e63",{
+      up:"w",down:"s",left:"a",right:"d",fire:"f"
+    });
+    this.players.push(p1);
+
     if(mode==="PvP"){
-      const p2=new Player(2,W*.75,H*.5,"#00b4d8",{
+      this.players.push(new Player(2,W*.75,H*.5,"#00b4d8",{
         up:"arrowup",down:"arrowdown",left:"arrowleft",right:"arrowright",fire:"enter"
-      });
-      p2.skills=[...this.purchasedSkills];this.players.push(p2);
+      }));
     }else{
       const c=DIFF[diff];
       for(let i=0;i<c.yellow;i++)this.spawnEnemy("yellow");
       for(let i=0;i<c.purple;i++)this.spawnEnemy("purple");
       for(let i=0;i<c.green;i++)this.spawnEnemy("green");
     }
-    this.activePlayer=p1;
-  }
-  spawnEnemy(type,ownerId=null){
-    this.enemies.push(new Enemy(type,Math.random()<.5?24:W-24,
-      40+Math.random()*Math.max(1,H-80),ownerId));
+    this.activePlayer=this.players[0];
   }
   targetsFor(player){
-    if(this.mode==="PvP")return this.players.filter(p=>p!==player&&p.alive);
-    return this.enemies.filter(e=>e.alive&&e.ownerId!==player.id);
+    return this.mode==="PvP"
+      ?this.players.filter(p=>p!==player&&p.alive)
+      :this.enemies.filter(e=>e.alive&&e.ownerId!==player.id);
   }
-  drawMenu(title,labels,actions){
-    text(title,W/2,H*.2,27,"#00fff5","center","bold");
+  drawMenu(title,items){
+    label(title,W/2,H*.2,27,"#00fff5","center","bold");
     this.buttons=[];
-    const x=this.menu.x,y=this.menu.y,w=this.menu.w,h=this.menu.h;
-    labels.forEach((label,i)=>{
-      const r={x,y:y+i*(h+this.menu.g),w,h};
-      button(r,label);
-      this.buttons.push({...r,run:actions[i]});
+    items.forEach((item,i)=>{
+      const r={x:this.menu.x,y:this.menu.y+i*(this.menu.h+this.menu.g),w:this.menu.w,h:this.menu.h};
+      drawButton(r,item.label);
+      this.buttons.push({...r,run:item.run});
     });
   }
   draw(){
     ctx.fillStyle="#0b0c10";ctx.fillRect(0,0,W,H);
+
     if(this.state==="controlChoice"){
-      this.drawMenu("CHOOSE CONTROL MODE",
-        ["Computer Mode","Touchscreen Mode"],
-        [()=>{this.controlMode="computer";this.state="mode";},
-         ()=>{this.controlMode="touch";this.state="mode";}]);
-      text("Choose how you want to play",W/2,H*.28,15,"#bbb");return;
+      this.drawMenu("CHOOSE CONTROL MODE",[
+        {label:"Computer Mode",run:()=>{this.controlMode="computer";this.state="mode";}},
+        {label:"Touchscreen Mode",run:()=>{this.controlMode="touch";this.state="mode";}}
+      ]);
+      label("Choose how you want to play",W/2,H*.28,15,"#bbb");
+      return;
     }
     if(this.state==="mode"){
-      this.drawMenu("SELECT MODE",["Single Player","Co-op","PvP"],[
-        ()=>{this.mode="Single Player";this.state="difficulty";},
-        ()=>{this.mode="Co-op";this.state="difficulty";},
-        ()=>{this.mode="PvP";this.state="difficulty";}
-      ]);return;
+      this.drawMenu("SELECT MODE",[
+        {label:"Single Player",run:()=>{this.mode="Single Player";this.state="difficulty";}},
+        {label:"Co-op",run:()=>{this.mode="Co-op";this.state="difficulty";}},
+        {label:"PvP",run:()=>{this.mode="PvP";this.state="difficulty";}}
+      ]);
+      return;
     }
     if(this.state==="difficulty"){
-      this.drawMenu("SELECT DIFFICULTY",Object.keys(DIFF).concat(["Back"]),[
-        ...Object.keys(DIFF).map(d=>()=>this.start(this.mode,d)),
-        ()=>{this.state="mode";}
-      ]);return;
+      const items=Object.keys(DIFF).map(d=>({label:d,run:()=>this.start(this.mode,d)}));
+      items.push({label:"Back",run:()=>{this.state="mode";}});
+      this.drawMenu("SELECT DIFFICULTY",items);return;
     }
     if(this.state==="shop"){this.drawGame();this.drawShop();return;}
     if(this.state==="dead"){
       this.drawGame();
-      ctx.fillStyle="rgba(0,0,0,.8)";ctx.fillRect(0,0,W,H);
-      text("GAME OVER",W/2,H*.43,36,"#ff2e63","center","bold");
+      ctx.fillStyle="rgba(0,0,0,.82)";ctx.fillRect(0,0,W,H);
+      label("GAME OVER",W/2,H*.42,36,"#ff2e63","center","bold");
       const winner=this.mode==="PvP"?this.players.find(p=>p.alive):null;
-      text(winner?`PLAYER ${winner.id} WINS`:"You were defeated",W/2,H*.51,20);
-      text("Tap or press a key to return to mode selection",W/2,H*.59,14,"#ddd");
+      label(winner?`PLAYER ${winner.id} WINS`:"You were defeated",W/2,H*.51,20);
+      label("Tap or press a key to return to mode selection",W/2,H*.59,14,"#ddd");
       return;
     }
     if(this.state==="playing")this.drawGame();
@@ -344,75 +364,72 @@ class Game{
     for(const e of this.enemies)e.draw();
     for(const b of this.bullets)b.draw();
     for(const r of this.rockets)r.draw();
-    for(const h of this.helpers)triangle(h.x,h.y,12,h.a,"#06d6a0");
+    for(const h of this.helpers)drawTriangle(h.x,h.y,12,h.a,"#06d6a0");
 
     for(const p of this.players){
       if(!p.alive)continue;
-      triangle(p.x,p.y,p.r,p.a,p.color);
+      drawTriangle(p.x,p.y,p.r,p.a,p.color);
       healthBar(p.x,p.y,p.hp,p.maxHp,p.color);
-      if(p.shield){
+      if(p.shield>0){
         ctx.strokeStyle="#58a6ff";ctx.lineWidth=3;
         ctx.beginPath();ctx.arc(p.x,p.y,p.r+7,0,Math.PI*2);ctx.stroke();
       }
-      text(`P${p.id}  ${p.hp} HP  ${p.marks} marks`,p.id===1?10:W-10,22,14,p.color,p.id===1?"left":"right","bold");
+      label(`P${p.id}  ${p.hp} HP  ${p.marks} marks`,
+        p.id===1?10:W-10,22,14,p.color,p.id===1?"left":"right","bold");
     }
 
-    button(this.shopRect,"SHOP","#ff2e63");
+    drawButton(this.shopRect,"SHOP","#ff2e63");
     if(this.controlMode==="computer"){
-      text("Move WASD • Aim/shoot mouse • F shoots • C Strong • V Rocket",
-        W/2,20,12,"#ddd");
-      this.drawAbilities(this.players[0],true);
+      label("WASD move • Mouse aim/shoot • C strong shot • V rocket",W/2,20,12,"#ddd");
     }else{
-      this.drawTouchControls();
-      this.drawAbilities(this.players[0],true);
+      this.drawTouchCircles();
     }
-
     if(this.mode==="PvP")
-      text("P1: WASD + F   |   P2: Arrow keys + Enter",W/2,43,12,"#ddd");
+      label("P1: WASD + F  •  P2: Arrow keys + Enter",W/2,42,12,"#ddd");
 
+    this.drawAbilities(this.players[0]);
     if(this.notice&&this.time<this.noticeUntil)
-      text(this.notice,W/2,65,15,"#ffe66d");
+      label(this.notice,W/2,65,14,"#ffe66d");
   }
-  drawTouchControls(){
-    for(const [circle,color,label] of [
+  drawTouchCircles(){
+    for(const [c,color,name] of [
       [this.leftCircle,"#00fff5","MOVE"],
       [this.rightCircle,"#ff2e63","AIM + FIRE"]
     ]){
-      ctx.strokeStyle=color;ctx.lineWidth=2;ctx.globalAlpha=.65;
-      ctx.beginPath();ctx.arc(circle.x,circle.y,circle.r,0,Math.PI*2);ctx.stroke();
-      ctx.globalAlpha=1;text(label,circle.x,circle.y,10);
+      ctx.strokeStyle=color;ctx.lineWidth=3;ctx.globalAlpha=.7;
+      ctx.beginPath();ctx.arc(c.x,c.y,c.r,0,Math.PI*2);ctx.stroke();
+      ctx.globalAlpha=1;label(name,c.x,c.y,12);
     }
   }
-  drawAbilities(p,showSpecial){
+  drawAbilities(p){
     if(!p)return;
+    let x=W-12-48,y=58;
     const size=48,gap=7;
-    let x=W-12-size,y=58;
     this.abilityButtons=[];
 
-    const add=(label,color,run,cooldownText="")=>{
+    const add=(name,color,run,extra="")=>{
       const r={x,y,w:size,h:size};
-      button(r,label,color,true);
-      if(cooldownText)text(cooldownText,x+size/2,y-8,10,"#fff");
+      drawButton(r,name,color,true);
+      if(extra)label(extra,x+size/2,y-8,10);
       this.abilityButtons.push({...r,run});
       y+=size+gap;
     };
 
-    if(showSpecial){
-      add("STRONG","#ff2e63",()=>p.strongShot(this),
-        p.strongReady>this.time?Math.ceil(p.strongReady-this.time)+"s":"C");
-      add("ROCKET","#7196ff",()=>p.rocket(this),
-        p.rocketReady>this.time?Math.ceil(p.rocketReady-this.time)+"s":"V");
-    }
+    add("STRONG","#ff2e63",()=>p.strongShot(this),
+      p.strongReady>this.time?Math.ceil(p.strongReady-this.time)+"s":"C");
+    add("ROCKET","#7196ff",()=>p.rocket(this),
+      p.rocketReady>this.time?Math.ceil(p.rocketReady-this.time)+"s":"V");
+
     for(const key of p.skills){
-      const s=SKILLS[key],cd=Math.max(0,(p.cooldowns[key]||0)-this.time);
-      add(s.name.toUpperCase().slice(0,6),s.color,()=>p.use(key,this),
-        cd>0?Math.ceil(cd)+"s":s.key);
+      const s=SKILLS[key],cool=Math.max(0,(p.cooldowns[key]||0)-this.time);
+      add(s.name.toUpperCase().slice(0,6),s.color,()=>p.useSkill(key,this),
+        cool>0?Math.ceil(cool)+"s":s.key);
     }
   }
   drawShop(){
-    ctx.fillStyle="rgba(0,0,0,.88)";ctx.fillRect(0,0,W,H);
-    text("SHOP",W/2,30,25,"#00fff5","center","bold");
-    text(`Marks: ${this.players[0]?.marks||0}`,W/2,56,15);
+    ctx.fillStyle="rgba(0,0,0,.9)";ctx.fillRect(0,0,W,H);
+    label("SHOP",W/2,28,24,"#00fff5","center","bold");
+    label(`Marks: ${this.players[0]?.marks||0}`,W/2,53,14);
     const items=[
       ...Object.entries(SKILLS).map(([key,s])=>({
         label:`Buy ${s.name} — ${s.cost} marks`,
@@ -433,17 +450,18 @@ class Game{
       })),
       {label:"Back to Match",run:()=>{this.state="playing";}}
     ];
-    const w=Math.min(360,W-28),h=Math.min(42,(H-90)/items.length);
-    const x=(W-w)/2,y=72;
+    const w=Math.min(360,W-28),h=Math.min(42,(H-85)/items.length);
+    const x=(W-w)/2,y=68;
     this.shopButtons=[];
-    items.forEach((item,i)=>{
-      const r={x,y:y+i*(h+5),w,h};button(r,item.label);
-      this.shopButtons.push({...r,run:item.run});
+    items.forEach((it,i)=>{
+      const r={x,y:y+i*(h+5),w,h};drawButton(r,it.label);
+      this.shopButtons.push({...r,run:it.run});
     });
   }
   update(dt){
     this.time+=dt;
     if(this.state!=="playing")return;
+
     for(const p of this.players)p.update(dt,this);
     for(const e of this.enemies)e.update(dt,this);
 
@@ -467,7 +485,9 @@ class Game{
       for(const target of targets){
         if(!target.alive||target===b.owner)continue;
         if(dist(b,target)<(target.r||18)+b.r){
-          target.damage(b.damage,b.owner instanceof Player?b.owner:null);
+          target.damage(b.damage);
+          if(b.owner instanceof Player&&target instanceof Enemy&&target.hp<=0)
+            b.owner.marks+=200;
           if(!b.piercing)b.life=0;
           break;
         }
@@ -477,7 +497,10 @@ class Game{
       r.update(dt);
       for(const target of this.targetsFor(r.owner)){
         if(target.alive&&dist(r,target)<(target.r||18)+r.r){
-          target.damage(12,r.owner);r.life=0;break;
+          const wasAlive=target.alive;
+          target.damage(12);
+          if(wasAlive&&target instanceof Enemy&&!target.alive)r.owner.marks+=200;
+          r.life=0;break;
         }
       }
     }
@@ -488,108 +511,135 @@ class Game{
 
     if(this.players.some(p=>!p.alive))this.state="dead";
   }
-  pointerDown(x,y){
+  pointerDown(id,x,y){
     if(this.state==="dead"){this.state="mode";return;}
-    if(this.state==="controlChoice"||this.state==="mode"||this.state==="difficulty"){
+
+    if(["controlChoice","mode","difficulty"].includes(this.state)){
       const b=this.buttons.find(b=>x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h);
-      if(b)b.run();return;
+      if(b)b.run();
+      return;
     }
     if(this.state==="shop"){
       const b=this.shopButtons.find(b=>x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h);
-      if(b)b.run();return;
+      if(b)b.run();
+      return;
     }
     if(this.state!=="playing")return;
-    if(x>=this.shopRect.x&&y<=this.shopRect.y+this.shopRect.h){this.state="shop";return;}
+
+    if(x>=this.shopRect.x&&x<=this.shopRect.x+this.shopRect.w&&
+       y>=this.shopRect.y&&y<=this.shopRect.y+this.shopRect.h){
+      this.state="shop";return;
+    }
+
+    for(const b of this.abilityButtons){
+      if(x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h){b.run();return;}
+    }
 
     if(this.controlMode==="touch"){
-      const p=this.players[0];
-      const L=this.leftCircle,R=this.rightCircle;
+      const p=this.players[0],L=this.leftCircle,R=this.rightCircle;
+
+      // Left circle: movement. Aiming follows the movement finger as well.
       if(Math.hypot(x-L.x,y-L.y)<=L.r){
-        this.touchPointer=true;this.touchRole="move";this.touchStart={x,y};return;
+        this.pointerRoles.set(id,{role:"move",startX:x,startY:y});
+        p.touchMove={x:0,y:0};
+        p.touchAim=Math.atan2(y-p.y,x-p.x);
+        return;
       }
+
+      // Right circle: separate aim-and-fire finger.
       if(Math.hypot(x-R.x,y-R.y)<=R.r){
-        this.touchPointer=true;this.touchRole="aim";
-        p.touchFire=true;p.touchAim=Math.atan2(y-R.y,x-R.x);return;
+        this.pointerRoles.set(id,{role:"aim"});
+        p.touchFire=true;
+        p.touchAim=Math.atan2(y-p.y,x-p.x);
       }
-      // Touching outside either control circle does not move, aim, or shoot.
       return;
     }
 
-    this.mouseDown=true;this.mouseAim={x,y};
+    this.mouseDown=true;
+    this.mouseAim={x,y};
     this.activePlayer=this.mode==="PvP"&&x>W/2?this.players[1]:this.players[0];
-    for(const b of this.abilityButtons)if(x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h){b.run();return;}
   }
-  pointerMove(x,y){
-    if(this.controlMode==="computer"){this.mouseAim={x,y};return;}
-    if(!this.touchPointer||!this.players[0])return;
+  pointerMove(id,x,y){
+    if(this.controlMode==="computer"){
+      this.mouseAim={x,y};return;
+    }
+
+    const control=this.pointerRoles.get(id);
+    if(!control||!this.players[0])return;
     const p=this.players[0];
-    if(this.touchRole==="move"){
-      const dx=x-this.touchStart.x,dy=y-this.touchStart.y,d=Math.hypot(dx,dy)||1;
-      const strength=Math.min(1,d/this.leftCircle.r);
-      p.touchMove={x:dx/d*strength,y:dy/d*strength};
-    }else if(this.touchRole==="aim"){
-      // Aim touch must have begun inside the right circle.
-      p.touchAim=Math.atan2(y-this.rightCircle.y,x-this.rightCircle.x);
+
+    if(control.role==="move"){
+      const dx=x-control.startX,dy=y-control.startY,d=Math.hypot(dx,dy)||1;
+      const amount=Math.min(1,d/this.leftCircle.r);
+      p.touchMove={x:dx/d*amount,y:dy/d*amount};
+
+      // The same finger also aims while moving.
+      p.touchAim=Math.atan2(y-p.y,x-p.x);
+    }else if(control.role==="aim"){
+      p.touchAim=Math.atan2(y-p.y,x-p.x);
+      p.touchFire=true;
     }
   }
-  pointerUp(){
-    this.mouseDown=false;this.touchPointer=false;this.touchRole=null;
-    if(this.players[0]){
-      this.players[0].touchMove={x:0,y:0};
-      this.players[0].touchFire=false;
+  pointerUp(id){
+    this.mouseDown=false;
+    const control=this.pointerRoles.get(id);
+    if(control&&this.players[0]){
+      if(control.role==="move")this.players[0].touchMove={x:0,y:0};
+      if(control.role==="aim")this.players[0].touchFire=false;
     }
-  }
-  buySkill(key){
-    const p=this.players[0],s=SKILLS[key];
-    if(!p||p.skills.includes(key)||p.marks<s.cost)return;
-    p.marks-=s.cost;p.skills.push(key);
+    this.pointerRoles.delete(id);
   }
   key(key,down){
     const k=key.toLowerCase();this.keys[k]=down;
     if(!down)return;
+
     if(this.state==="dead"){this.state="mode";return;}
-    if(this.state==="playing"){
-      if(k==="escape"){this.state="shop";return;}
-      let p=this.players[0];
-      if(this.mode==="PvP"&&["arrowup","arrowdown","arrowleft","arrowright","enter"].includes(k))
-        p=this.players[1];
-      if(k==="c")p.strongShot(this);
-      if(k==="v")p.rocket(this);
-      for(const [skill,s] of Object.entries(SKILLS))
-        if(k===s.key.toLowerCase())p.use(skill,this);
-    }
+    if(this.state!=="playing")return;
+    if(k==="escape"){this.state="shop";return;}
+
+    let p=this.players[0];
+    if(this.mode==="PvP"&&["arrowup","arrowdown","arrowleft","arrowright","enter"].includes(k))
+      p=this.players[1];
+
+    if(k==="c")p.strongShot(this);
+    if(k==="v")p.rocket(this);
+    for(const [skill,s] of Object.entries(SKILLS))
+      if(k===s.key.toLowerCase())p.useSkill(skill,this);
   }
 }
 
-game=new Game();resize();
+game=new Game();
+resize();
 
-function point(e){
+function canvasPoint(e){
   const r=canvas.getBoundingClientRect();
   return{x:e.clientX-r.left,y:e.clientY-r.top};
 }
 canvas.addEventListener("pointerdown",e=>{
   e.preventDefault();
-  if(e.pointerType==="touch"&&game.controlMode===null){
-    // Still allow the mode-choice buttons to be tapped normally.
-  }
-  const p=point(e);game.pointerDown(p.x,p.y);
+  const p=canvasPoint(e);
+  game.pointerDown(e.pointerId,p.x,p.y);
+  try{canvas.setPointerCapture(e.pointerId);}catch(_){}
 },{passive:false});
 canvas.addEventListener("pointermove",e=>{
-  const p=point(e);
-  if(e.pointerType==="mouse")game.mouseAim=p;
-  else game.pointerMove(p.x,p.y);
+  const p=canvasPoint(e);
+  game.pointerMove(e.pointerId,p.x,p.y);
 });
-canvas.addEventListener("pointerup",()=>game.pointerUp());
-canvas.addEventListener("pointercancel",()=>game.pointerUp());
+canvas.addEventListener("pointerup",e=>game.pointerUp(e.pointerId));
+canvas.addEventListener("pointercancel",e=>game.pointerUp(e.pointerId));
+
 addEventListener("keydown",e=>{
   game.key(e.key,true);
-  if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," "].includes(e.key))e.preventDefault();
+  if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," "].includes(e.key))
+    e.preventDefault();
 });
 addEventListener("keyup",e=>game.key(e.key,false));
 
 function frame(){
-  const t=performance.now()/1000,dt=Math.min(.04,t-game.last);game.last=t;
-  game.update(dt);game.draw();requestAnimationFrame(frame);
+  const t=performance.now()/1000;
+  const dt=Math.min(.04,t-game.last);
+  game.last=t;game.update(dt);game.draw();
+  requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
 </script>
