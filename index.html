@@ -21,10 +21,10 @@ let W=innerWidth,H=innerHeight,DPR=1,game;
 
 const SPEED=1.7;
 const DIFFICULTIES={
-  NEWS:{yellow:0,purple:3,green:2},
-  BATTLERS:{yellow:0,purple:5,green:3},
-  MASTER:{yellow:2,purple:0,green:4},
-  HELL:{yellow:1,purple:0,green:0}
+  NEWS:{yellow:0,purple:3,green:2,spawnEvery:8},
+  BATTLERS:{yellow:0,purple:5,green:3,spawnEvery:6},
+  MASTER:{yellow:2,purple:0,green:4,spawnEvery:4.5},
+  HELL:{yellow:1,purple:0,green:0,spawnEvery:3.5}
 };
 const SKILLS={
   shield:{name:"SHIELD",cost:300,key:"Q",color:"#58a6ff"},
@@ -47,30 +47,34 @@ function resize(){
 }
 addEventListener("resize",resize);
 
-function drawText(value,x,y,size=15,color="#fff",align="center",weight="normal"){
+function drawText(s,x,y,size=15,color="#fff",align="center",weight="normal"){
   ctx.fillStyle=color;
   ctx.font=`${weight} ${size}px Arial`;
   ctx.textAlign=align;
   ctx.textBaseline="middle";
-  ctx.fillText(value,x,y);
+  ctx.fillText(s,x,y);
 }
-function drawButton(r,value,color="#00fff5",small=false){
+function drawButton(r,s,color="#00fff5",small=false){
   ctx.fillStyle="#171827";
   ctx.fillRect(r.x,r.y,r.w,r.h);
   ctx.strokeStyle=color;
   ctx.lineWidth=2;
   ctx.strokeRect(r.x,r.y,r.w,r.h);
-  drawText(value,r.x+r.w/2,r.y+r.h/2,small?10:14,"#fff","center","bold");
+  drawText(s,r.x+r.w/2,r.y+r.h/2,small?10:14,"#fff","center","bold");
 }
 function drawTriangle(x,y,r,a,color){
-  const ca=Math.cos(a),sa=Math.sin(a),px=-sa,py=ca;
+  // Triangle's point is its forward direction; a is the aim direction.
+  ctx.save();
+  ctx.translate(x,y);
+  ctx.rotate(a);
   ctx.beginPath();
-  ctx.moveTo(x+ca*r,y+sa*r);
-  ctx.lineTo(x-ca*r*.65+px*r*.72,y-sa*r*.65+py*r*.72);
-  ctx.lineTo(x-ca*r*.65-px*r*.72,y-sa*r*.65-py*r*.72);
+  ctx.moveTo(r,0);
+  ctx.lineTo(-r*.72,r*.68);
+  ctx.lineTo(-r*.72,-r*.68);
   ctx.closePath();
   ctx.fillStyle=color;
   ctx.fill();
+  ctx.restore();
 }
 function drawHealth(x,y,hp,max,color){
   ctx.fillStyle="#373743";
@@ -78,19 +82,19 @@ function drawHealth(x,y,hp,max,color){
   ctx.fillStyle=color;
   ctx.fillRect(x-21,y-32,42*clamp(hp/max,0,1),5);
 }
-function closest(from,items){
-  let nearest=null,best=Infinity;
+function closest(origin,items){
+  let result=null,best=Infinity;
   for(const item of items){
     if(!item.alive)continue;
-    const d=distance(from,item);
-    if(d<best){best=d;nearest=item;}
+    const d=distance(origin,item);
+    if(d<best){best=d;result=item;}
   }
-  return nearest;
+  return result;
 }
 
 class Bullet{
-  constructor(owner,x,y,angle,speed=12,damage=1,color="#00fff5",piercing=false){
-    Object.assign(this,{owner,x,y,a:angle,damage,color,piercing,life:2,r:5});
+  constructor(owner,x,y,a,speed=12,damage=1,color="#00fff5",piercing=false){
+    Object.assign(this,{owner,x,y,a,damage,color,piercing,life:2,r:5});
     this.speed=speed*SPEED;
   }
   update(dt){
@@ -124,12 +128,15 @@ class Rocket{
 }
 
 class Player{
-  constructor(id,x,y,color,keys){
+  constructor(id,x,y,color,controls){
     Object.assign(this,{
-      id,x,y,color,keys,a:0,hp:60,maxHp:60,alive:true,marks:0,r:18,
+      id,x,y,color,controls,
+      a:0,hp:60,maxHp:60,alive:true,marks:0,r:18,
       skills:[],cooldowns:{},shield:0,dash:0,lastShot:0,
       strongReady:0,rocketReady:0,
-      moveStick:{x:0,y:0},touchAim:null,touchFire:false
+      moveStick:{x:0,y:0},
+      touchAim:null,
+      touchFire:false
     });
   }
   damage(amount){
@@ -142,23 +149,27 @@ class Player{
   update(dt,g){
     if(!this.alive)return;
 
-    let dx=this.moveStick.x,dy=this.moveStick.y;
+    let dx=this.moveStick.x;
+    let dy=this.moveStick.y;
+
     if(g.controlMode==="computer"){
-      if(g.keys[this.keys.up])dy--;
-      if(g.keys[this.keys.down])dy++;
-      if(g.keys[this.keys.left])dx--;
-      if(g.keys[this.keys.right])dx++;
+      if(g.keys[this.controls.up])dy--;
+      if(g.keys[this.controls.down])dy++;
+      if(g.keys[this.controls.left])dx--;
+      if(g.keys[this.controls.right])dx++;
     }
 
     const length=Math.hypot(dx,dy);
     if(length>0){
-      dx/=length;dy/=length;
+      dx/=length;
+      dy/=length;
       const speed=5.5*SPEED*(this.dash>0?2.5:1);
       this.x=clamp(this.x+dx*speed,this.r,W-this.r);
       this.y=clamp(this.y+dy*speed,this.r,H-this.r);
     }
     this.dash=Math.max(0,this.dash-dt);
 
+    // Update facing before shooting; visible triangle and shots share this angle.
     if(this.touchAim!==null){
       this.a=this.touchAim;
     }else if(g.controlMode==="computer"&&g.mouseAim&&g.activePlayer===this){
@@ -167,7 +178,8 @@ class Player{
 
     const firing=this.touchFire||
       (g.controlMode==="computer"&&(
-        g.keys[this.keys.fire]||(g.mouseDown&&g.activePlayer===this)
+        g.keys[this.controls.fire]||
+        (g.mouseDown&&g.activePlayer===this)
       ));
 
     if(firing&&g.time-this.lastShot>.11){
@@ -187,17 +199,11 @@ class Player{
       const target=closest(this,g.targetsFor(this));
       this.cooldowns[key]=g.time+12;
       if(target&&distance(this,target)<230){
-        target.damage(8,this);
+        g.damageTarget(target,8,this);
         g.notify("Strike hit");
       }else g.notify("No target nearby");
     }else if(key==="lockon"){
-      const target=closest(this,g.targetsFor(this));
-      if(target){
-        this.a=angleTo(this,target);
-        g.bullets.push(new Bullet(this,this.x,this.y,this.a,15,4,"#f9c74f",true));
-        this.cooldowns[key]=g.time+5;
-        g.notify("Lock-on fired");
-      }
+      this.lockOn(g);
     }else if(key==="fake"){
       this.dash=.28;
       this.cooldowns[key]=g.time+8;
@@ -207,6 +213,16 @@ class Player{
       this.cooldowns[key]=g.time+25;
       g.notify("Helper summoned");
     }
+  }
+  lockOn(g){
+    if(!this.alive||(this.cooldowns.lockon||0)>g.time)return;
+    const target=closest(this,g.targetsFor(this));
+    if(!target){g.notify("No target for Lock-on");return;}
+
+    this.a=angleTo(this,target);
+    g.bullets.push(new Bullet(this,this.x,this.y,this.a,15,4,"#f9c74f",true));
+    this.cooldowns.lockon=g.time+1;
+    g.notify("Lock-on fired");
   }
   strongShot(g){
     if(g.time<this.strongReady)return;
@@ -232,14 +248,6 @@ class Enemy{
     if(type==="yellow")this.r=22;
     if(type==="purple")this.r=21;
   }
-  damage(amount,player){
-    if(!this.alive)return;
-    this.hp-=amount;
-    if(this.hp<=0){
-      this.hp=0;this.alive=false;
-      if(player)player.marks+=200;
-    }
-  }
   update(dt,g){
     if(!this.alive)return;
     const targets=g.players.filter(p=>p.alive&&p.id!==this.ownerId);
@@ -248,14 +256,29 @@ class Enemy{
 
     this.a=angleTo(this,target);
 
+    // Yellow enemies chase the player and shoot when in range.
+    if(this.type==="yellow"){
+      const d=distance(this,target);
+      const speed=100*SPEED;
+      if(d>35){
+        this.x+=Math.cos(this.a)*speed*dt;
+        this.y+=Math.sin(this.a)*speed*dt;
+      }
+      if(d<460&&g.time-this.lastShot>1.05){
+        this.lastShot=g.time;
+        g.bullets.push(new Bullet(this,this.x,this.y,this.a,8,2,"#ffe66d"));
+      }
+      this.x=clamp(this.x,this.r,W-this.r);
+      this.y=clamp(this.y,this.r,H-this.r);
+      return;
+    }
+
+    // Green enemy charges across the screen. Its path can be dodged.
     if(this.type==="green"){
       if(!this.chargeAt)this.chargeAt=g.time+2;
-
       if(this.state==="charging"){
-        // Green enemy charges through the player's position; it does not lock on.
         this.x+=Math.cos(this.chargeAngle)*720*dt;
         this.y+=Math.sin(this.chargeAngle)*720*dt;
-
         if(this.x<-this.r||this.x>W+this.r||this.y<-this.r||this.y>H+this.r){
           this.state="waiting";
           this.chargeAt=g.time+1.4;
@@ -268,7 +291,7 @@ class Enemy{
     }
 
     const d=distance(this,target);
-    const speed=(this.type==="yellow"?2.4:1.7)*SPEED;
+    const speed=1.7*SPEED;
     if(d>260){
       this.x+=Math.cos(this.a)*speed;
       this.y+=Math.sin(this.a)*speed;
@@ -277,16 +300,9 @@ class Enemy{
       this.x-=Math.cos(this.a)*speed*.65;
       this.y-=Math.sin(this.a)*speed*.65;
     }
-
-    const interval=this.type==="yellow"?.35:1.05;
-    if(g.time-this.lastShot>interval){
+    if(g.time-this.lastShot>1.05){
       this.lastShot=g.time;
-      g.bullets.push(new Bullet(
-        this,this.x,this.y,this.a,
-        this.type==="yellow"?10:8,
-        this.type==="yellow"?1:2,
-        this.type==="yellow"?"#ffe66d":"#c77dff"
-      ));
+      g.bullets.push(new Bullet(this,this.x,this.y,this.a,8,2,"#c77dff"));
     }
     this.x=clamp(this.x,this.r,W-this.r);
     this.y=clamp(this.y,this.r,H-this.r);
@@ -330,17 +346,18 @@ class Game{
     this.buttons=[];
     this.shopButtons=[];
     this.abilityButtons=[];
+    this.spawnTimer=0;
     this.layout();
   }
 
   layout(){
-    this.menu={x:Math.max(16,(W-Math.min(W-32,340))/2),y:H*.34,w:Math.min(W-32,340),h:48,g:10};
-
-    // Larger touch circles, placed close to the lower corners.
+    this.menu={
+      x:Math.max(16,(W-Math.min(W-32,340))/2),
+      y:H*.34,w:Math.min(W-32,340),h:48,g:10
+    };
     const radius=Math.min(105,Math.max(72,W*.20));
     this.leftCircle={x:radius+18,y:H-radius-20,r:radius};
     this.rightCircle={x:W-radius-18,y:H-radius-20,r:radius};
-
     this.shopRect={x:W-112,y:10,w:102,h:38};
   }
 
@@ -350,12 +367,9 @@ class Game{
   }
 
   spawnEnemy(type,ownerId=null){
-    this.enemies.push(new Enemy(
-      type,
-      Math.random()<.5?24:W-24,
-      40+Math.random()*Math.max(1,H-80),
-      ownerId
-    ));
+    const x=Math.random()<.5?24:W-24;
+    const y=40+Math.random()*Math.max(1,H-80);
+    this.enemies.push(new Enemy(type,x,y,ownerId));
   }
 
   start(mode,difficulty){
@@ -368,6 +382,7 @@ class Game{
     this.rockets=[];
     this.helpers=[];
     this.sticks.clear();
+    this.spawnTimer=0;
 
     this.players.push(new Player(1,W*.25,H*.5,"#ff2e63",{
       up:"w",down:"s",left:"a",right:"d",fire:"f"
@@ -378,10 +393,10 @@ class Game{
         up:"arrowup",down:"arrowdown",left:"arrowleft",right:"arrowright",fire:"enter"
       }));
     }else{
-      const config=DIFFICULTIES[difficulty];
-      for(let i=0;i<config.yellow;i++)this.spawnEnemy("yellow");
-      for(let i=0;i<config.purple;i++)this.spawnEnemy("purple");
-      for(let i=0;i<config.green;i++)this.spawnEnemy("green");
+      const cfg=DIFFICULTIES[difficulty];
+      for(let i=0;i<cfg.yellow;i++)this.spawnEnemy("yellow");
+      for(let i=0;i<cfg.purple;i++)this.spawnEnemy("purple");
+      for(let i=0;i<cfg.green;i++)this.spawnEnemy("green");
     }
     this.activePlayer=this.players[0];
   }
@@ -391,6 +406,14 @@ class Game{
     return this.enemies.filter(e=>e.alive&&e.ownerId!==player.id);
   }
 
+  damageTarget(target,amount,player){
+    if(!target.alive)return;
+    const wasAlive=target.alive;
+    target.damage(amount);
+    if(wasAlive&&!target.alive&&target instanceof Enemy&&player instanceof Player)
+      player.marks+=200;
+  }
+
   drawMenu(title,items){
     drawText(title,W/2,H*.2,27,"#00fff5","center","bold");
     this.buttons=[];
@@ -398,8 +421,7 @@ class Game{
       const r={
         x:this.menu.x,
         y:this.menu.y+i*(this.menu.h+this.menu.g),
-        w:this.menu.w,
-        h:this.menu.h
+        w:this.menu.w,h:this.menu.h
       };
       drawButton(r,item.label);
       this.buttons.push({...r,run:item.run});
@@ -443,14 +465,21 @@ class Game{
       return;
     }
 
-    if(this.state==="dead"){
+    if(this.state==="dead"||this.state==="won"){
       this.drawGame();
       ctx.fillStyle="rgba(0,0,0,.82)";
       ctx.fillRect(0,0,W,H);
-      drawText("GAME OVER",W/2,H*.42,36,"#ff2e63","center","bold");
-      const winner=this.mode==="PvP"?this.players.find(p=>p.alive):null;
-      drawText(winner?`PLAYER ${winner.id} WINS`:"You were defeated",W/2,H*.51,20);
-      drawText("Tap or press a key to return to mode selection",W/2,H*.59,14,"#ddd");
+
+      if(this.state==="won"){
+        drawText("YOU WIN!",W/2,H*.42,38,"#ffe66d","center","bold");
+        drawText("All enemies defeated!",W/2,H*.51,20);
+      }else{
+        const winner=this.mode==="PvP"?this.players.find(p=>p.alive):null;
+        drawText("GAME OVER",W/2,H*.42,36,"#ff2e63","center","bold");
+        drawText(winner?`PLAYER ${winner.id} WINS`:"You were defeated",W/2,H*.51,20);
+      }
+
+      drawText("Tap or press a key to return to mode selection",W/2,H*.60,14,"#ddd");
       return;
     }
 
@@ -458,45 +487,45 @@ class Game{
   }
 
   drawGame(){
-    for(const e of this.enemies)e.draw();
-    for(const b of this.bullets)b.draw();
-    for(const r of this.rockets)r.draw();
-    for(const h of this.helpers)drawTriangle(h.x,h.y,12,h.a,"#06d6a0");
+    for(const enemy of this.enemies)enemy.draw();
+    for(const bullet of this.bullets)bullet.draw();
+    for(const rocket of this.rockets)rocket.draw();
+    for(const helper of this.helpers)
+      drawTriangle(helper.x,helper.y,12,helper.a,"#06d6a0");
 
-    for(const p of this.players){
-      if(!p.alive)continue;
-      drawTriangle(p.x,p.y,p.r,p.a,p.color);
-      drawHealth(p.x,p.y,p.hp,p.maxHp,p.color);
+    for(const player of this.players){
+      if(!player.alive)continue;
+      // Player triangle orientation uses the same angle as aiming and bullets.
+      drawTriangle(player.x,player.y,player.r,player.a,player.color);
+      drawHealth(player.x,player.y,player.hp,player.maxHp,player.color);
 
-      if(p.shield>0){
+      if(player.shield>0){
         ctx.strokeStyle="#58a6ff";
         ctx.lineWidth=3;
         ctx.beginPath();
-        ctx.arc(p.x,p.y,p.r+7,0,Math.PI*2);
+        ctx.arc(player.x,player.y,player.r+7,0,Math.PI*2);
         ctx.stroke();
       }
 
-      drawText(`P${p.id}  ${p.hp} HP  ${p.marks} marks`,
-        p.id===1?10:W-10,22,14,p.color,p.id===1?"left":"right","bold");
+      drawText(`P${player.id}  ${player.hp} HP  ${player.marks} marks`,
+        player.id===1?10:W-10,22,14,player.color,
+        player.id===1?"left":"right","bold");
     }
 
     drawButton(this.shopRect,"SHOP","#ff2e63");
 
     if(this.controlMode==="computer"){
-      drawText("WASD move • Mouse aim/shoot • C strong shot • V rocket",W/2,20,12,"#ddd");
+      drawText("WASD move • Mouse aim/shoot • C strong • V rocket",W/2,20,12,"#ddd");
     }else{
       this.drawTouchControls();
     }
 
-    if(this.mode==="PvP"){
-      drawText("P1: WASD + F  •  P2: Arrow keys + Enter",W/2,42,12,"#ddd");
-    }
+    if(this.mode==="PvP")
+      drawText("P1: WASD + F • P2: Arrow keys + Enter",W/2,42,12,"#ddd");
 
     this.drawAbilityButtons(this.players[0]);
-
-    if(this.notice&&this.time<this.noticeUntil){
+    if(this.notice&&this.time<this.noticeUntil)
       drawText(this.notice,W/2,65,14,"#ffe66d");
-    }
   }
 
   drawTouchControls(){
@@ -514,31 +543,38 @@ class Game{
     ctx.globalAlpha=1;
 
     const stick=[...this.sticks.values()].find(s=>s.type===type);
-    const knobX=stick?stick.x:circle.x;
-    const knobY=stick?stick.y:circle.y;
+    const x=stick?stick.x:circle.x;
+    const y=stick?stick.y:circle.y;
 
     ctx.fillStyle=color;
     ctx.globalAlpha=.8;
     ctx.beginPath();
-    ctx.arc(knobX,knobY,circle.r*.23,0,Math.PI*2);
+    ctx.arc(x,y,circle.r*.23,0,Math.PI*2);
     ctx.fill();
     ctx.globalAlpha=1;
 
     drawText(title,circle.x,circle.y+circle.r*.62,11);
   }
 
+  drawAbilityButton(r,name,color,action){
+    drawButton(r,name,color,true);
+    this.abilityButtons.push({...r,run:action});
+  }
+
   drawAbilityButtons(player){
+    this.abilityButtons=[];
     if(!player)return;
 
-    let x=W-12-48,y=58;
+    const lockRect={x:W-62,y:58,w:50,h:50};
+    this.drawAbilityButton(lockRect,"LOCK","#f9c74f",()=>player.lockOn(this));
+
+    let x=W-62,y=116;
     const size=48,gap=7;
-    this.abilityButtons=[];
 
     const add=(name,color,action,extra)=>{
       const r={x,y,w:size,h:size};
-      drawButton(r,name,color,true);
-      drawText(extra,x+size/2,y-8,10);
-      this.abilityButtons.push({...r,run:action});
+      this.drawAbilityButton(r,name,color,action);
+      drawText(extra,x+size/2,y-7,10);
       y+=size+gap;
     };
 
@@ -547,8 +583,8 @@ class Game{
     add("ROCKET","#7196ff",()=>player.rocket(this),
       player.rocketReady>this.time?Math.ceil(player.rocketReady-this.time)+"s":"V");
 
-    for(const key of player.skills){
-      const skill=SKILLS[key];
+    for(const [key,skill] of Object.entries(SKILLS)){
+      if(key==="lockon"||!player.skills.includes(key))continue;
       const cooldown=Math.max(0,(player.cooldowns[key]||0)-this.time);
       add(skill.name,skill.color,()=>player.useSkill(key,this),
         cooldown>0?Math.ceil(cooldown)+"s":skill.key);
@@ -565,34 +601,24 @@ class Game{
       ...Object.entries(SKILLS).map(([key,skill])=>({
         label:`Buy ${skill.name} — ${skill.cost} marks`,
         run:()=>{
-          const p=this.players[0];
-          if(p.skills.includes(key)){this.notify("Already owned");return;}
-          if(p.marks<skill.cost){this.notify("Not enough marks");return;}
-          p.marks-=skill.cost;
-          p.skills.push(key);
+          const player=this.players[0];
+          if(player.skills.includes(key)){this.notify("Already owned");return;}
+          if(player.marks<skill.cost){this.notify("Not enough marks");return;}
+          player.marks-=skill.cost;
+          player.skills.push(key);
           this.notify(skill.name+" purchased");
-        }
-      })),
-      ...["yellow","green","purple"].map(type=>({
-        label:`Buy ${type} enemy — 100 marks`,
-        run:()=>{
-          const p=this.players[0];
-          if(p.marks<100){this.notify("Not enough marks");return;}
-          p.marks-=100;
-          this.spawnEnemy(type,p.id);
-          this.notify("Enemy purchased");
         }
       })),
       {label:"Back to Match",run:()=>{this.state="playing";}}
     ];
 
     const w=Math.min(360,W-28);
-    const h=Math.min(42,(H-85)/items.length);
-    const x=(W-w)/2,y=68;
+    const h=Math.min(44,(H-90)/items.length);
+    const x=(W-w)/2,y=70;
     this.shopButtons=[];
 
     items.forEach((item,i)=>{
-      const r={x,y:y+i*(h+5),w,h};
+      const r={x,y:y+i*(h+6),w,h};
       drawButton(r,item.label);
       this.shopButtons.push({...r,run:item.run});
     });
@@ -612,42 +638,47 @@ class Game{
       dx=dx/length*max;
       dy=dy/length*max;
     }
-
     stick.x=circle.x+dx;
     stick.y=circle.y+dy;
 
     if(stick.type==="move"){
-      const amount=Math.min(1,length/max);
       if(length>5){
+        const amount=Math.min(1,length/max);
         player.moveStick={x:dx/length*amount,y:dy/length*amount};
-
-        // Single-finger movement also aims in the movement direction.
-        player.touchAim=Math.atan2(dy,dx);
       }else{
         player.moveStick={x:0,y:0};
       }
-    }else if(length>5){
-      // Independent right stick controls aim and fires while held.
-      player.touchAim=Math.atan2(dy,dx);
-      player.touchFire=true;
+    }else{
+      if(length>5){
+        // Aim is measured from the player's position to the joystick direction.
+        // This makes triangle direction and projectile direction match.
+        player.touchAim=Math.atan2(dy,dx);
+        player.touchFire=true;
+      }else{
+        player.touchFire=false;
+      }
     }
   }
 
   pointerDown(id,x,y){
-    if(this.state==="dead"){
+    if(this.state==="dead"||this.state==="won"){
       this.state="mode";
       return;
     }
 
     if(["controlChoice","mode","difficulty"].includes(this.state)){
-      const b=this.buttons.find(item=>x>=item.x&&x<=item.x+item.w&&y>=item.y&&y<=item.y+item.h);
-      if(b)b.run();
+      const button=this.buttons.find(b=>
+        x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h
+      );
+      if(button)button.run();
       return;
     }
 
     if(this.state==="shop"){
-      const b=this.shopButtons.find(item=>x>=item.x&&x<=item.x+item.w&&y>=item.y&&y<=item.y+item.h);
-      if(b)b.run();
+      const button=this.shopButtons.find(b=>
+        x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h
+      );
+      if(button)button.run();
       return;
     }
 
@@ -659,26 +690,28 @@ class Game{
       return;
     }
 
-    for(const b of this.abilityButtons){
-      if(x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h){
-        b.run();
-        return;
-      }
+    const ability=this.abilityButtons.find(b=>
+      x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h
+    );
+    if(ability){
+      ability.run();
+      return;
     }
 
     if(this.controlMode==="touch"){
-      const left=this.leftCircle,right=this.rightCircle;
-
-      if(Math.hypot(x-left.x,y-left.y)<=left.r){
-        this.sticks.set(id,{type:"move",x:left.x,y:left.y});
+      if(Math.hypot(x-this.leftCircle.x,y-this.leftCircle.y)<=this.leftCircle.r){
+        this.sticks.set(id,{type:"move",x:this.leftCircle.x,y:this.leftCircle.y});
         this.updateStick(id,x,y);
         return;
       }
 
-      if(Math.hypot(x-right.x,y-right.y)<=right.r){
-        this.sticks.set(id,{type:"aim",x:right.x,y:right.y});
+      if(Math.hypot(x-this.rightCircle.x,y-this.rightCircle.y)<=this.rightCircle.r){
+        this.sticks.set(id,{type:"aim",x:this.rightCircle.x,y:this.rightCircle.y});
         this.updateStick(id,x,y);
+        return;
       }
+
+      // All other touchscreen taps are ignored.
       return;
     }
 
@@ -692,17 +725,14 @@ class Game{
       this.mouseAim={x,y};
       return;
     }
-    this.updateStick(id,x,y);
+    if(this.sticks.has(id))this.updateStick(id,x,y);
   }
 
   pointerUp(id){
     const stick=this.sticks.get(id);
     if(stick&&this.players[0]){
-      if(stick.type==="move"){
-        this.players[0].moveStick={x:0,y:0};
-      }else{
-        this.players[0].touchFire=false;
-      }
+      if(stick.type==="move")this.players[0].moveStick={x:0,y:0};
+      if(stick.type==="aim")this.players[0].touchFire=false;
     }
     this.sticks.delete(id);
     if(id==="mouse")this.mouseDown=false;
@@ -713,7 +743,7 @@ class Game{
     this.keys[k]=down;
     if(!down)return;
 
-    if(this.state==="dead"){
+    if(this.state==="dead"||this.state==="won"){
       this.state="mode";
       return;
     }
@@ -728,10 +758,8 @@ class Game{
 
     if(k==="c")player.strongShot(this);
     if(k==="v")player.rocket(this);
-
-    for(const [skill,data] of Object.entries(SKILLS)){
+    for(const [skill,data] of Object.entries(SKILLS))
       if(k===data.key.toLowerCase())player.useSkill(skill,this);
-    }
   }
 
   update(dt){
@@ -763,10 +791,7 @@ class Game{
       for(const target of targets){
         if(!target.alive||target===bullet.owner)continue;
         if(distance(bullet,target)<(target.r||18)+bullet.r){
-          const wasAlive=target.alive;
-          target.damage(bullet.damage);
-          if(wasAlive&&target instanceof Enemy&&!target.alive&&bullet.owner instanceof Player)
-            bullet.owner.marks+=200;
+          this.damageTarget(target,bullet.damage,bullet.owner);
           if(!bullet.piercing)bullet.life=0;
           break;
         }
@@ -777,9 +802,7 @@ class Game{
       rocket.update(dt);
       for(const target of this.targetsFor(rocket.owner)){
         if(target.alive&&distance(rocket,target)<(target.r||18)+rocket.r){
-          const wasAlive=target.alive;
-          target.damage(12);
-          if(wasAlive&&target instanceof Enemy&&!target.alive)rocket.owner.marks+=200;
+          this.damageTarget(target,12,rocket.owner);
           rocket.life=0;
           break;
         }
@@ -794,30 +817,49 @@ class Game{
     );
     this.enemies=this.enemies.filter(enemy=>enemy.alive);
 
-    if(this.players.some(player=>!player.alive))this.state="dead";
+    if(this.players.some(player=>!player.alive)){
+      this.state="dead";
+      return;
+    }
+
+    if(this.mode!=="PvP"){
+      this.spawnTimer+=dt;
+      const cfg=DIFFICULTIES[this.diff];
+
+      // Spawn enemies on a timer, up to a reasonable number alive at once.
+      if(this.spawnTimer>=cfg.spawnEvery&&this.enemies.length<12){
+        this.spawnTimer=0;
+        const types=["yellow","purple","green"];
+        this.spawnEnemy(types[Math.floor(Math.random()*types.length)]);
+      }
+
+      // Win by clearing all enemies; future waves stop after victory.
+      if(this.enemies.length===0){
+        this.state="won";
+      }
+    }else if(this.players.filter(player=>player.alive).length<=1){
+      this.state="won";
+    }
   }
 }
 
 game=new Game();
 resize();
 
-function getPoint(e){
+function eventPoint(e){
   const r=canvas.getBoundingClientRect();
   return{x:e.clientX-r.left,y:e.clientY-r.top};
 }
-
 canvas.addEventListener("pointerdown",e=>{
   e.preventDefault();
-  const p=getPoint(e);
+  const p=eventPoint(e);
   game.pointerDown(e.pointerId,p.x,p.y);
   try{canvas.setPointerCapture(e.pointerId);}catch(_){}
 },{passive:false});
-
 canvas.addEventListener("pointermove",e=>{
-  const p=getPoint(e);
+  const p=eventPoint(e);
   game.pointerMove(e.pointerId,p.x,p.y);
 });
-
 canvas.addEventListener("pointerup",e=>game.pointerUp(e.pointerId));
 canvas.addEventListener("pointercancel",e=>game.pointerUp(e.pointerId));
 
