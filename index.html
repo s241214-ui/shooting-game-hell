@@ -2,10 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Triangle Battle Arena</title>
 <style>
-html,body{margin:0;padding:0;width:100%;height:100%;background:#0b0c10;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none;font-family:Helvetica,Arial,sans-serif}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#0b0c10;touch-action:none;user-select:none;-webkit-user-select:none;font-family:Arial,Helvetica,sans-serif}
 canvas{display:block;width:100%;height:100%}
 </style>
 </head>
@@ -14,498 +14,335 @@ canvas{display:block;width:100%;height:100%}
 <script src="https://unpkg.com/peerjs@1/dist/peerjs.min.js"></script>
 <script>
 "use strict";
-
-const canvas=document.getElementById("c"),ctx=canvas.getContext("2d");
+const canvas=document.querySelector("#c"),ctx=canvas.getContext("2d");
 let W=0,H=0,game;
+const now=()=>performance.now()/1000, clamp=(n,a,b)=>Math.max(a,Math.min(b,n));
+const SPEED=1.7, SHOP_COST=100;
 
 function resize(){
-  const dpr=devicePixelRatio||1;
-  W=innerWidth;H=innerHeight;
-  canvas.width=W*dpr;canvas.height=H*dpr;
-  canvas.style.width=W+"px";canvas.style.height=H+"px";
-  ctx.setTransform(dpr,0,0,dpr,0,0);
-  if(game)game.setupJoysticks();
+  const d=devicePixelRatio||1; W=innerWidth; H=innerHeight;
+  canvas.width=W*d; canvas.height=H*d; canvas.style.width=W+"px"; canvas.style.height=H+"px";
+  ctx.setTransform(d,0,0,d,0,0); if(game)game.setupControls();
 }
 addEventListener("resize",resize);
 
-const now=()=>performance.now()/1000;
-const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
-const SPEED_MULT=1.7;
-
-/* Isosceles triangle: narrow apex points along angle. */
-function triPoints(x,y,r,angle){
-  const tip=[x+Math.cos(angle)*r,y+Math.sin(angle)*r];
-  const backX=x-Math.cos(angle)*r*.65;
-  const backY=y-Math.sin(angle)*r*.65;
-  const halfWidth=r*.72;
-  const px=-Math.sin(angle),py=Math.cos(angle);
-  return [
-    tip,
-    [backX+px*halfWidth,backY+py*halfWidth],
-    [backX-px*halfWidth,backY-py*halfWidth]
-  ];
-}
+/* Isosceles triangle: the apex points in the direction of angle. */
 function drawTri(x,y,r,angle,color){
-  const p=triPoints(x,y,r,angle);
-  ctx.beginPath();ctx.moveTo(...p[0]);ctx.lineTo(...p[1]);ctx.lineTo(...p[2]);
-  ctx.closePath();ctx.fillStyle=color;ctx.fill();
+  const ca=Math.cos(angle),sa=Math.sin(angle),px=-sa,py=ca;
+  const tip=[x+ca*r,y+sa*r],bx=x-ca*r*.65,by=y-sa*r*.65,w=r*.72;
+  ctx.beginPath();ctx.moveTo(...tip);ctx.lineTo(bx+px*w,by+py*w);ctx.lineTo(bx-px*w,by-py*w);ctx.closePath();
+  ctx.fillStyle=color;ctx.fill();
 }
-function drawHpBar(x,y,hp,maxHp,color="#ff2e63"){
-  const w=42,h=5;
-  ctx.fillStyle="#2b2d42";ctx.fillRect(x-w/2,y-32,w,h);
-  ctx.fillStyle=color;ctx.fillRect(x-w/2,y-32,w*clamp(hp/maxHp,0,1),h);
+function hpBar(x,y,hp,max,color="#ff2e63"){
+  ctx.fillStyle="#30313d";ctx.fillRect(x-21,y-32,42,5);
+  ctx.fillStyle=color;ctx.fillRect(x-21,y-32,42*clamp(hp/max,0,1),5);
 }
-
+function button(x,y,w,h,label,color="#00fff5"){
+  ctx.fillStyle="#171827";ctx.fillRect(x,y,w,h);ctx.strokeStyle=color;ctx.lineWidth=2;ctx.strokeRect(x,y,w,h);
+  ctx.fillStyle="#fff";ctx.font="bold 14px Arial";ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText(label,x+w/2,y+h/2);
+  ctx.textAlign="left";ctx.textBaseline="alphabetic";
+}
 class Bullet{
-  constructor(x,y,angle,speed=10,radius=5,color="#00fff5",piercing=false){
-    this.x=x;this.y=y;this.dx=Math.cos(angle);this.dy=Math.sin(angle);
-    this.speed=speed*SPEED_MULT;this.radius=radius;this.color=color;
-    this.piercing=piercing;this.active=true;this.damageMult=1;
-    this.fromHelper=false;this.ownerId=null;this.lockOnTarget=null;
+  constructor(x,y,a,s=10,r=5,color="#00fff5",piercing=false){
+    this.x=x;this.y=y;this.angle=a;this.dx=Math.cos(a);this.dy=Math.sin(a);
+    this.speed=s*SPEED;this.radius=r;this.color=color;this.piercing=piercing;this.active=true;this.damage=1;
   }
-  update(){
-    if(this.lockOnTarget?.isAlive){
-      const d=Math.hypot(this.lockOnTarget.x-this.x,this.lockOnTarget.y-this.y);
-      if(d<140){
-        const a=Math.atan2(this.lockOnTarget.y-this.y,this.lockOnTarget.x-this.x);
-        this.dx=Math.cos(a);this.dy=Math.sin(a);
-      }
-    }
-    this.x+=this.dx*this.speed;this.y+=this.dy*this.speed;
-    if(this.x<-20||this.x>W+20||this.y<-20||this.y>H+20)this.active=false;
-  }
-  draw(){
-    ctx.fillStyle=this.color;ctx.beginPath();ctx.arc(this.x,this.y,this.radius,0,Math.PI*2);ctx.fill();
-  }
-}
-class StrongBullet extends Bullet{
-  constructor(x,y,angle){super(x,y,angle,17,14,"#ff2e63",true);this.speed=17*SPEED_MULT;}
-  draw(){
-    ctx.fillStyle=this.fromHelper?"#bbb":"#ff2e63";
-    ctx.beginPath();ctx.arc(this.x,this.y,this.radius,0,Math.PI*2);ctx.fill();
-    ctx.fillStyle="#fff";ctx.beginPath();ctx.arc(this.x,this.y,this.radius/2,0,Math.PI*2);ctx.fill();
-  }
+  update(){this.x+=this.dx*this.speed;this.y+=this.dy*this.speed;if(this.x<-20||this.y<-20||this.x>W+20||this.y>H+20)this.active=false;}
+  draw(){ctx.fillStyle=this.color;ctx.beginPath();ctx.arc(this.x,this.y,this.radius,0,Math.PI*2);ctx.fill();}
 }
 class Rocket{
-  constructor(x,y,target,speed=6.5,color="#1a3a8a",fromHelper=false){
-    this.x=x;this.y=y;this.target=target;this.radius=7;this.size=8;
-    this.speed=speed*SPEED_MULT;this.color=color;this.active=true;
-    this.spawnTime=now();this.lifetime=2.5;this.damage=1;
-    this.fromHelper=fromHelper;this.ownerId=null;
-    this.angle=target?Math.atan2(target.y-y,target.x-x):0;
-  }
+  constructor(x,y,target){this.x=x;this.y=y;this.target=target;this.angle=target?Math.atan2(target.y-y,target.x-x):0;this.speed=6.5*SPEED;this.radius=7;this.active=true;this.start=now();}
   update(){
-    if(now()-this.spawnTime>this.lifetime){this.active=false;return;}
-    if(this.target?.isAlive){
-      const desired=Math.atan2(this.target.y-this.y,this.target.x-this.x);
-      let delta=Math.atan2(Math.sin(desired-this.angle),Math.cos(desired-this.angle));
-      this.angle+=clamp(delta,-.06,.06);
-    }
+    if(now()-this.start>2.5){this.active=false;return;}
+    if(this.target?.isAlive){const a=Math.atan2(this.target.y-this.y,this.target.x-this.x),d=Math.atan2(Math.sin(a-this.angle),Math.cos(a-this.angle));this.angle+=clamp(d,-.06,.06);}
     this.x+=Math.cos(this.angle)*this.speed;this.y+=Math.sin(this.angle)*this.speed;
-    if(this.x<5||this.x>W-5||this.y<5||this.y>H-5)this.active=false;
+    if(this.x<0||this.y<0||this.x>W||this.y>H)this.active=false;
   }
-  draw(){drawTri(this.x,this.y,this.size,this.angle,this.color);}
+  draw(){drawTri(this.x,this.y,9,this.angle,"#7196ff");}
 }
-
-/* Player HP is 60 in every mode. */
-class PlayerRed{
-  constructor(x,y,hp=60,ownerId=null){
-    this.ownerId=ownerId;this.x=x;this.y=y;this.radius=18;
-    this.baseSpeed=5.8*SPEED_MULT;this.angle=0;this.maxHp=60;this.hp=60;
-    this.isAlive=true;this.score=0;this.kills=0;this.equipped=[];
-    this.strongBulletCd=20;this.lastStrongBulletTime=-20;
-    this.rocketCd=3;this.lastRocketTime=-3;this.dashCd=4;this.lastDashTime=-4;
-    this.dashEndTime=0;this.shieldHp=0;this.shieldMax=10;this.shieldCd=30;
-    this.shieldLastUsed=-30;this.strikePending=false;this.isStriking=false;
-    this.strikeDir=[1,0];this.strikeCd=15;this.strikeLastUsed=-15;
-    this.lockonActive=false;this.lockonSelecting=false;this.lockonPath=[];
-    this.lockonCircles=[];this.lockonLocked=new Set();this.lockonCd=25;
-    this.lockonLastUsed=-25;this.fakeActive=false;this.fakeStart=0;
-    this.fakeDuration=10;this.fakeCd=20;this.fakeLastUsed=-20;
-    this.fakeAbsorbed=0;this.fakeOrbsAngle=0;this.fakeMode="follow";
-    this.fakeOrbPositions=[null,null];this.fakeOrbTargets=[null,null];
-    this.fakeOrbLastShoot=0;this.helpActive=false;this.helpStart=0;
-    this.helpDuration=12;this.helpCd=30;this.helpLastUsed=-30;
-    this.helpers=[];this.pvpMode=false;
+class Player{
+  constructor(x,y,id){
+    this.x=x;this.y=y;this.ownerId=id;this.radius=18;this.angle=0;this.maxHp=60;this.hp=60;this.isAlive=true;
+    this.speed=5.8*SPEED;this.score=0;this.kills=0;this.skills=[];this.shield=0;this.lastShield=0;
+    this.lastStrong=-99;this.lastRocket=-99;this.striking=false;this.dashUntil=0;
   }
-  hasSkill(key){
-    if(this.pvpMode&&["fake","help","lockon"].includes(key))return false;
-    return this.equipped.includes(key);
-  }
-  move(dx,dy,aim){
-    if(!this.isAlive||this.isStriking)return;
-    const speed=this.baseSpeed*(this.pvpMode?1.3:1)*(now()<this.dashEndTime?2.6:1);
-    this.x=clamp(this.x+dx*speed,this.radius,W-this.radius);
-    this.y=clamp(this.y+dy*speed,this.radius,H-this.radius);this.angle=aim;
-  }
-  triggerDash(){if(now()-this.lastDashTime>=this.dashCd){this.lastDashTime=now();this.dashEndTime=now()+.18;}}
-  fireStrongBullet(targets){
-    if(now()-this.lastStrongBulletTime<this.strongBulletCd)return null;
-    this.lastStrongBulletTime=now();const b=new StrongBullet(this.x,this.y,this.angle);
-    const target=targets.filter(t=>t.isAlive).sort((a,c)=>
-      Math.hypot(a.x-this.x,a.y-this.y)-Math.hypot(c.x-this.x,c.y-this.y))[0];
-    if(target){b.angle=Math.atan2(target.y-this.y,target.x-this.x);b.dx=Math.cos(b.angle);b.dy=Math.sin(b.angle);}
-    b.ownerId=this.ownerId;return b;
+  has(k){return this.skills.includes(k);}
+  takeDamage(n){if(this.striking||!this.isAlive)return;const a=Math.min(n,this.shield);this.shield-=a;this.hp-=n-a;if(this.hp<=0){this.hp=0;this.isAlive=false;}}
+  move(dx,dy,a){this.angle=a;if(!this.isAlive||this.striking)return;const s=this.speed*(now()<this.dashUntil?2.6:1);this.x=clamp(this.x+dx*s,this.radius,W-this.radius);this.y=clamp(this.y+dy*s,this.radius,H-this.radius);}
+  fireStrong(targets){
+    if(now()-this.lastStrong<20)return null;this.lastStrong=now();
+    const t=closest(this,targets);const a=t?Math.atan2(t.y-this.y,t.x-this.x):this.angle;
+    const b=new Bullet(this.x,this.y,a,17,12,"#ff2e63",true);b.damage=99;return b;
   }
   fireRockets(enemies){
-    if(this.pvpMode||now()-this.lastRocketTime<this.rocketCd)return [];
-    const alive=enemies.filter(e=>e.isAlive);if(!alive.length)return [];
-    this.lastRocketTime=now();
-    return Array.from({length:5},(_,i)=>{
-      const target=alive[i%alive.length],angle=this.angle+(i-2)*.35;
-      return new Rocket(this.x+Math.cos(angle)*14,this.y+Math.sin(angle)*14,target,5.5,"#1a3a8a");
-    });
-  }
-  activateShield(){if(!this.hasSkill("shield")||this.shieldHp>0||now()-this.shieldLastUsed<this.shieldCd)return;this.shieldHp=this.shieldMax;}
-  tryArmStrike(){if(this.hasSkill("strike")&&!this.isStriking&&now()-this.strikeLastUsed>=this.strikeCd)this.strikePending=true;}
-  beginStrike(angle){this.isStriking=true;this.strikePending=false;this.strikeDir=[Math.cos(angle),Math.sin(angle)];this.strikeLastUsed=now();}
-  startCrashBounce(x,y){const dx=this.x-x,dy=this.y-y,d=Math.hypot(dx,dy)||1;this.x=clamp(this.x+dx/d*120,this.radius,W-this.radius);this.y=clamp(this.y+dy/d*120,this.radius,H-this.radius);}
-  updateStrike(){
-    if(!this.isStriking)return;
-    this.x+=this.strikeDir[0]*22*SPEED_MULT;this.y+=this.strikeDir[1]*22*SPEED_MULT;
-    if(this.x<this.radius||this.x>W-this.radius||this.y<this.radius||this.y>H-this.radius){
-      this.x=clamp(this.x,this.radius,W-this.radius);this.y=clamp(this.y,this.radius,H-this.radius);this.isStriking=false;
-    }
-  }
-  activateLockon(){if(!this.hasSkill("lockon")||now()-this.lockonLastUsed<this.lockonCd)return;this.lockonSelecting=true;this.lockonActive=false;}
-  commitLockon(enemies){
-    this.lockonLastUsed=now();this.lockonSelecting=false;this.lockonActive=true;const expire=now()+2;
-    for(const c of this.lockonPath){this.lockonCircles.push({...c,expire});for(const e of enemies)if(e.isAlive&&Math.hypot(e.x-c.x,e.y-c.y)<c.r+e.radius)this.lockonLocked.add(e);}
-    this.lockonPath=[];
-  }
-  activateFake(){if(!this.hasSkill("fake")||this.fakeActive||now()-this.fakeLastUsed<this.fakeCd)return;this.fakeActive=true;this.fakeStart=now();this.fakeAbsorbed=0;this.fakeMode=Math.random()<.5?"follow":"attack";this.fakeOrbPositions=[null,null];this.fakeOrbTargets=[null,null];}
-  activateHelp(){if(!this.hasSkill("help")||this.helpActive||now()-this.helpLastUsed<this.helpCd)return;this.helpActive=true;this.helpStart=now();this.helpers=Array.from({length:5},(_,i)=>{const a=i*Math.PI*2/5;return new Helper(this.x+Math.cos(a)*60,this.y+Math.sin(a)*60,[...this.equipped]);});}
-  takeDamage(amount){
-    if(this.isStriking)return;
-    if(this.fakeActive){this.fakeAbsorbed+=amount;return;}
-    const absorbed=Math.min(this.shieldHp,amount);this.shieldHp-=absorbed;amount-=absorbed;
-    if(this.shieldHp===0&&absorbed>0)this.shieldLastUsed=now();
-    this.hp-=amount;if(this.hp<=0){this.hp=0;this.isAlive=false;}
+    if(now()-this.lastRocket<3)return [];const alive=enemies.filter(e=>e.isAlive);if(!alive.length)return [];
+    this.lastRocket=now();return Array.from({length:5},(_,i)=>new Rocket(this.x,this.y,alive[i%alive.length]));
   }
 }
-class Helper{
-  constructor(x,y,equipped){
-    this.x=x;this.y=y;this.radius=12;this.baseSpeed=5*SPEED_MULT;this.angle=0;
-    this.equipped=equipped;this.maxHp=25;this.hp=25;this.isAlive=true;
-    this.lastShot=0;this.lastRocket=0;this.lastShield=-30;this.lastBeam=0;
-    this.shieldHp=0;this.roamAngle=Math.random()*Math.PI*2;this.roamTimer=0;
-    this.skillTimer=Math.random()*2;this.isStriking=false;
+class Enemy{
+  constructor(x,y,type,buyer=null){
+    this.x=x;this.y=y;this.type=type;this.buyer=buyer;this.angle=0;this.isAlive=true;this.radius=type==="yellow"?22:type==="purple"?23:18;
+    this.maxHp=type==="yellow"?35:type==="purple"?6:4;this.hp=this.maxHp;this.lastShot=0;this.state="fight";this.chargeAt=0;this.hitDash=false;
+    this.preferred=type==="purple"?300:type==="green"?380:260;
   }
-  takeDamage(n){if(this.isStriking)return;const a=Math.min(this.shieldHp,n);this.shieldHp-=a;this.hp-=n-a;if(this.hp<=0){this.hp=0;this.isAlive=false;}}
-  update(owner,enemies){
-    if(!this.isAlive||!owner.isAlive)return;
-    const t=now();this.roamTimer-=.016;
-    if(this.roamTimer<=0){this.roamAngle=Math.random()*Math.PI*2;this.roamTimer=1+Math.random()*2;}
-    const ox=owner.x+Math.cos(this.roamAngle)*140-this.x,oy=owner.y+Math.sin(this.roamAngle)*140-this.y,od=Math.hypot(ox,oy)||1;
-    if(od>20){this.x+=ox/od*this.baseSpeed;this.y+=oy/od*this.baseSpeed;}
-    const target=enemies.filter(e=>e.isAlive).sort((a,b)=>Math.hypot(a.x-this.x,a.y-this.y)-Math.hypot(b.x-this.x,b.y-this.y))[0];
-    if(target){this.angle=Math.atan2(target.y-this.y,target.x-this.x);if(t-this.lastShot>.15){this.lastShot=t;const b=new Bullet(this.x,this.y,this.angle,11,4,"#bbbbbb");b.fromHelper=true;b.damageMult=.5;game.redBullets.push(b);}}
-    this.skillTimer-=.016;
-    if(this.skillTimer<=0){
-      this.skillTimer=2+Math.random()*3;
-      const skill=["rocket","beam","shield","dash"][Math.floor(Math.random()*4)];
-      if(skill==="rocket"&&target&&t-this.lastRocket>4){this.lastRocket=t;const r=new Rocket(this.x,this.y,target,5,"#88aaff",true);r.damage=.5;game.redRockets.push(r);}
-      else if(skill==="beam"&&target&&t-this.lastBeam>6){this.lastBeam=t;const b=new StrongBullet(this.x,this.y,this.angle);b.fromHelper=true;b.speed*=.7;game.redStrongBullets.push(b);}
-      else if(skill==="shield"&&this.shieldHp<=0&&t-this.lastShield>30){this.shieldHp=5;this.lastShield=t;}
-      else if(skill==="dash"){this.x+=Math.cos(this.angle)*30;this.y+=Math.sin(this.angle)*30;}
+  takeDamage(n){if(!this.isAlive)return;this.hp-=n;if(this.hp<=0){this.hp=0;this.isAlive=false;}}
+  target(players){
+    const options=players.filter(p=>p?.isAlive&&(this.buyer==null||p.ownerId!==this.buyer));
+    return closest(this,options);
+  }
+  update(players,bullets){
+    if(!this.isAlive)return;const p=this.target(players);if(!p)return;
+    const dx=p.x-this.x,dy=p.y-this.y,d=Math.hypot(dx,dy)||1,t=now();this.angle=Math.atan2(dy,dx);
+    if(this.type==="green"){
+      if(this.state==="charge"){if(t>=this.chargeAt)this.state="dash";}
+      if(this.state==="dash"){
+        const s=17*SPEED;this.x+=Math.cos(this.angle)*s;this.y+=Math.sin(this.angle)*s;
+        if(!this.hitDash&&Math.hypot(this.x-p.x,this.y-p.y)<this.radius+p.radius){p.takeDamage(5);this.hitDash=true;}
+        if(this.x<0||this.y<0||this.x>W||this.y>H){this.state="fight";this.hitDash=false;}
+      }else{
+        if(d>this.preferred-40){this.x+=dx/d*this.radius*.22;this.y+=dy/d*this.radius*.22;}
+        if(t-this.lastShot>2){this.lastShot=t;const b=new Bullet(this.x,this.y,this.angle,18,10,"#06d6a0",true);b.damage=3;bullets.push(b);this.state="charge";this.chargeAt=t+1.2;this.hitDash=false;}
+      }
+    }else{
+      const sp=this.type==="yellow"?8.5*SPEED:3.6*SPEED;
+      if(d<this.preferred-25){this.x-=dx/d*sp*.6;this.y-=dy/d*sp*.6;}
+      else if(d>this.preferred+25){this.x+=dx/d*sp*.6;this.y+=dy/d*sp*.6;}
+      else{this.x-=dy/d*sp*.35;this.y+=dx/d*sp*.35;}
+      const interval=this.type==="yellow"?.12:.9;
+      if(t-this.lastShot>interval){
+        this.lastShot=t;const b=new Bullet(this.x,this.y,this.angle,this.type==="yellow"?11:9,this.type==="yellow"?6:6,this.type==="yellow"?"#ffe66d":"#c77dff");
+        b.damage=this.type==="yellow"?1:.5;bullets.push(b);
+      }
+      if(this.type==="yellow"&&t-this.lastShot>2.7&&Math.random()<.01){this.state="dash";this.chargeAt=t+.4;}
     }
     this.x=clamp(this.x,this.radius,W-this.radius);this.y=clamp(this.y,this.radius,H-this.radius);
   }
-  draw(){if(this.shieldHp>0){ctx.strokeStyle="#06d6a0";ctx.lineWidth=2;ctx.beginPath();ctx.arc(this.x,this.y,this.radius+4,0,Math.PI*2);ctx.stroke();}drawTri(this.x,this.y,this.radius,this.angle,"#888");drawHpBar(this.x,this.y,this.hp,this.maxHp,"#bbb");}
+  draw(){const c=this.type==="yellow"?"#f9d56e":this.type==="purple"?"#9d4edd":"#06d6a0";drawTri(this.x,this.y,this.radius,this.angle,c);hpBar(this.x,this.y,this.hp,this.maxHp);}
 }
-
-class YellowTriangle{
-  constructor(x,y,hp=35){
-    this.x=x;this.y=y;this.radius=22;this.baseSpeed=8.5*SPEED_MULT;this.angle=0;this.maxHp=hp;this.hp=hp;this.isAlive=true;
-    this.preferredDistance=260;this.attackMode="aim";this.modeTimer=now()+.3;this.aimDuration=.3;
-    this.rapidShootTimer=0;this.rapidShootInterval=.1;this.rapidDuration=3;this.rapidShootStarted=0;
-    this.powerChargeStart=0;this.powerChargeDuration=1;this.isCharging=false;this.isDashing=false;
-    this.chargeStart=0;this.dashDir=[0,0];this.dashTravelled=0;this.dashMaxDist=0;this.dashHitDone=false;
-    this.crashCooldownUntil=0;this.trail=[];this.isDodging=false;this.dodgeDir=[0,0];this.dodgeStart=0;
-    this.dodgeDuration=.35;this.dodgeCooldown=0;this.aimedAtDuration=0;this.beingAimedAt=false;
-    this.speedBoostUntil=0;this.sidestepCooldown=0;this.canShoot=true;
-  }
-  takeDamage(n=1){this.hp-=n;if(this.hp<=0){this.hp=0;this.isAlive=false;}}
-  trySidestep(){const t=now();if(t<this.dodgeCooldown||this.isDodging||this.isDashing||this.isCharging)return;const side=Math.random()<.5?1:-1;this.dodgeDir=[-Math.sin(this.angle)*side,Math.cos(this.angle)*side];this.isDodging=true;this.dodgeStart=t;this.dodgeDuration=.4;this.dodgeCooldown=t+1.2;this.sidestepCooldown=t+3.5;}
-  tryDashThroughTarget(target){const t=now();if(t<this.sidestepCooldown||this.isDodging||this.isDashing||this.isCharging)return;const dx=target.x-this.x,dy=target.y-this.y,d=Math.hypot(dx,dy)||1;this.dodgeDir=[dx/d,dy/d];this.isDodging=true;this.dodgeStart=t;this.dodgeDuration=.3;this.dodgeCooldown=t+1;this.sidestepCooldown=t+4;}
-  triggerCrash(target){if(this.isCharging||this.isDashing)return;const dx=target.x-this.x,dy=target.y-this.y,d=Math.hypot(dx,dy)||1;this.attackMode="crash";this.isCharging=true;this.chargeStart=now();this.dashDir=[dx/d,dy/d];this.dashMaxDist=Math.max(W,H)*1.5;this.dashTravelled=0;this.dashHitDone=false;}
-  updateDash(target){
-    if(this.isCharging){if(now()-this.chargeStart>=.4){this.isCharging=false;this.isDashing=true;}return;}
-    if(!this.isDashing)return;
-    const speed=this.baseSpeed*5;this.x+=this.dashDir[0]*speed;this.y+=this.dashDir[1]*speed;this.dashTravelled+=speed;
-    if(!this.dashHitDone&&target?.isAlive&&Math.hypot(target.x-this.x,target.y-this.y)<this.radius+(target.radius||18)){
-      if(target.isStriking&&target.startCrashBounce){target.startCrashBounce(this.x,this.y);this.startBounce();}
-      else if(target.takeDamage){target.takeDamage(5);this.dashHitDone=true;}
-    }
-    if(this.dashTravelled>=this.dashMaxDist||this.x<this.radius||this.x>W-this.radius||this.y<this.radius||this.y>H-this.radius){
-      this.isDashing=false;this.x=clamp(this.x,this.radius,W-this.radius);this.y=clamp(this.y,this.radius,H-this.radius);this.crashCooldownUntil=now()+4;this.attackMode="aim";this.modeTimer=now()+this.aimDuration;
-    }
-  }
-  startBounce(){this.isDashing=false;this.isCharging=false;this.x=clamp(this.x-this.dashDir[0]*150,this.radius,W-this.radius);this.y=clamp(this.y-this.dashDir[1]*150,this.radius,H-this.radius);this.attackMode="aim";this.modeTimer=now()+this.aimDuration;this.crashCooldownUntil=now()+3;}
-  update(target,enemyBullets){
-    if(!this.isAlive||!target?.isAlive)return;
-    const t=now(),dx=target.x-this.x,dy=target.y-this.y,dist=Math.hypot(dx,dy)||1;this.angle=Math.atan2(dy,dx);
-    if(this.isDodging){if(t-this.dodgeStart>=this.dodgeDuration)this.isDodging=false;else{const s=this.baseSpeed*3;this.x+=this.dodgeDir[0]*s;this.y+=this.dodgeDir[1]*s;return;}}
-    if(this.isCharging||this.isDashing){this.updateDash(target);return;}
-    let speed=this.baseSpeed;if(t<this.speedBoostUntil)speed*=1.8;
-    if(this.beingAimedAt){this.aimedAtDuration+=.016;if(this.aimedAtDuration>1.2&&t>this.speedBoostUntil){this.speedBoostUntil=t+3;this.aimedAtDuration=0;}}else this.aimedAtDuration=Math.max(0,this.aimedAtDuration-.02);
-    if(dist<400&&Math.random()<.01)this.trySidestep();if(dist<250&&Math.random()<.008)this.tryDashThroughTarget(target);
-    if(dist<this.preferredDistance-25){this.x-=dx/dist*speed*.6;this.y-=dy/dist*speed*.6;}
-    else if(dist>this.preferredDistance+25){this.x+=dx/dist*speed*.6;this.y+=dy/dist*speed*.6;}
-    else{this.x+=-dy/dist*speed*.5;this.y+=dx/dist*speed*.5;}
-    if(this.attackMode==="aim"&&t>=this.modeTimer){this.attackMode="rapid";this.rapidShootStarted=t;this.rapidShootTimer=t;}
-    else if(this.attackMode==="rapid"){
-      if(t-this.rapidShootStarted>this.rapidDuration){this.attackMode="power";this.powerChargeStart=t;}
-      else if(this.canShoot&&t-this.rapidShootTimer>=this.rapidShootInterval){this.rapidShootTimer=t;const b=new Bullet(this.x,this.y,this.angle,11,6,"#ffe66d");b.damageMult=1;enemyBullets.push(b);}
-    }else if(this.attackMode==="power"&&t-this.powerChargeStart>=this.powerChargeDuration){
-      const b=new Bullet(this.x,this.y,this.angle,22,12,"#fff",true);b.damageMult=5;enemyBullets.push(b);
-      if(t>this.crashCooldownUntil&&Math.random()<.5)this.triggerCrash(target);else{this.attackMode="aim";this.modeTimer=t+this.aimDuration;}
-    }
-    this.x=clamp(this.x,this.radius,W-this.radius);this.y=clamp(this.y,this.radius,H-this.radius);
-  }
-  draw(){let c="#f9d56e";if(this.attackMode==="power")c="#ff8800";if(this.isDodging)c="#aaffaa";if(this.isCharging)c="#fff";if(this.isDashing)c="#ff5500";drawTri(this.x,this.y,this.radius,this.angle,c);drawHpBar(this.x,this.y,this.hp,this.maxHp);if(this.isCharging){ctx.strokeStyle="#f00";ctx.setLineDash([6,6]);ctx.beginPath();ctx.moveTo(this.x,this.y);ctx.lineTo(this.x+this.dashDir[0]*400,this.y+this.dashDir[1]*400);ctx.stroke();ctx.setLineDash([]);}}
-}
-
-class PurpleTriangle{
-  constructor(x,y){this.x=x;this.y=y;this.radius=23;this.speed=3.6*SPEED_MULT;this.angle=0;this.maxHp=6;this.hp=6;this.isAlive=true;this.preferredDistance=300;this.lastShotTime=now();this.shotInterval=.9;}
-  takeDamage(n=1){this.hp-=n;if(this.hp<=0){this.hp=0;this.isAlive=false;}}
-  update(target,bullets){
-    if(!this.isAlive||!target?.isAlive)return;
-    const dx=target.x-this.x,dy=target.y-this.y,d=Math.hypot(dx,dy)||1;this.angle=Math.atan2(dy,dx);
-    if(d<this.preferredDistance-25){this.x-=dx/d*this.speed;this.y-=dy/d*this.speed;}
-    else if(d>this.preferredDistance+25){this.x+=dx/d*this.speed;this.y+=dy/d*this.speed;}
-    else{this.x+=dy/d*this.speed*.6;this.y-=dx/d*this.speed*.6;}
-    if(now()-this.lastShotTime>=this.shotInterval){this.lastShotTime=now();const b=new Bullet(this.x,this.y,this.angle,9,6,"#c77dff");b.damageMult=.5;bullets.push(b);}
-    this.x=clamp(this.x,this.radius,W-this.radius);this.y=clamp(this.y,this.radius,H-this.radius);
-  }
-  draw(){drawTri(this.x,this.y,this.radius,this.angle,"#9d4edd");drawHpBar(this.x,this.y,this.hp,this.maxHp);}
-}
-class GreenTriangle{
-  constructor(x,y){this.x=x;this.y=y;this.radius=18;this.speed=4.5*SPEED_MULT;this.angle=0;this.maxHp=4;this.hp=4;this.isAlive=true;this.preferredDistance=380;this.state="firing";this.fireCooldown=now()+1;this.waitStart=0;this.chargeStart=0;this.dashDir=[0,0];this.dashTravelled=0;this.dashMaxDist=0;this.dashHitDone=false;this.rocketTarget=null;}
-  takeDamage(n=1){this.hp-=n;if(this.hp<=0){this.hp=0;this.isAlive=false;}}
-  update(target,bullets){
-    if(!this.isAlive||!target?.isAlive)return;
-    const t=now(),dx=target.x-this.x,dy=target.y-this.y,d=Math.hypot(dx,dy)||1;this.angle=Math.atan2(dy,dx);
-    if(this.state!=="dashing"){if(d>this.preferredDistance-40){this.x+=dx/d*this.speed;this.y+=dy/d*this.speed;}else if(d<this.preferredDistance-100){this.x-=dx/d*this.speed;this.y-=dy/d*this.speed;}}
-    if(this.state==="firing"&&t>=this.fireCooldown){
-      /* Green uses strong bullets, not rockets. Each does 3 damage. */
-      const b=new Bullet(this.x,this.y,this.angle,18,10,"#06d6a0",true);b.damageMult=3;bullets.push(b);
-      this.state="charging";this.chargeStart=t;this.dashDir=[dx/d,dy/d];this.dashMaxDist=d+150;this.dashTravelled=0;this.dashHitDone=false;
-    }else if(this.state==="charging"&&t-this.chargeStart>=2){this.state="dashing";}
-    else if(this.state==="dashing"){
-      const s=this.speed*5;this.x+=this.dashDir[0]*s;this.y+=this.dashDir[1]*s;this.dashTravelled+=s;
-      if(!this.dashHitDone&&target.isAlive&&Math.hypot(target.x-this.x,target.y-this.y)<this.radius+(target.radius||18)*1.5){target.takeDamage(5);this.dashHitDone=true;}
-      if(this.dashTravelled>=this.dashMaxDist||this.x<this.radius||this.x>W-this.radius||this.y<this.radius||this.y>H-this.radius){this.state="firing";this.fireCooldown=now()+2;}
-    }
-    this.x=clamp(this.x,this.radius,W-this.radius);this.y=clamp(this.y,this.radius,H-this.radius);
-  }
-  draw(){let c=this.state==="charging"?"#fff":this.state==="dashing"?"#00ff88":"#06d6a0";drawTri(this.x,this.y,this.radius,this.angle,c);drawHpBar(this.x,this.y,this.hp,this.maxHp);}
-}
-
-const DIFFICULTIES={
-  news:{name:"NEWS",playerHp:60,start:{yellow:0,purple:3,green:2},max:{yellow:0,purple:3,green:2}},
-  battlers:{name:"BATTLERS",playerHp:60,start:{yellow:0,purple:5,green:3},max:{yellow:2,purple:5,green:3}},
-  master:{name:"MASTER",playerHp:60,start:{yellow:2,purple:0,green:4},max:{yellow:8,purple:0,green:4}},
-  hell:{name:"HELL",playerHp:60,start:{yellow:1,purple:0,green:0},max:{yellow:99,purple:0,green:0}}
+const DIFF={
+  news:{name:"NEWS",start:{yellow:0,purple:3,green:2},max:{yellow:0,purple:3,green:2}},
+  battlers:{name:"BATTLERS",start:{yellow:0,purple:5,green:3},max:{yellow:2,purple:5,green:3}},
+  master:{name:"MASTER",start:{yellow:2,purple:0,green:4},max:{yellow:8,purple:0,green:4}},
+  hell:{name:"HELL",start:{yellow:1,purple:0,green:0},max:{yellow:99,purple:0,green:0}}
 };
-const SKILLS={shield:{name:"SHIELD",cost:300},strike:{name:"STRIKE",cost:500},lockon:{name:"LOCKON",cost:100},fake:{name:"FAKE",cost:400},help:{name:"HELP",cost:600}};
+const SKILLS={shield:{label:"SHIELD",cost:300},strike:{label:"STRIKE",cost:500},lockon:{label:"LOCKON",cost:100},fake:{label:"FAKE",cost:400},help:{label:"HELP",cost:600}};
+function closest(origin,list){let best=null,bd=Infinity;for(const p of list){if(!p?.isAlive)continue;const d=Math.hypot(p.x-origin.x,p.y-origin.y);if(d<bd){bd=d;best=p;}}return best;}
 
 class Net{
   constructor(){this.peer=null;this.isHost=false;this.connections={};this.myId="";this.roomCode="";}
-  host(){return new Promise((resolve,reject)=>{this.peer?.destroy();this.peer=new Peer();this.isHost=true;this.peer.on("open",id=>{this.myId=id;this.roomCode=id;resolve(id);});this.peer.on("error",reject);this.peer.on("connection",conn=>{this.connections[conn.peer]=conn;conn.on("data",data=>game.onNetData(conn.peer,data));conn.on("close",()=>{delete this.connections[conn.peer];delete game.remotePlayers[conn.peer];});});});}
-  join(code){return new Promise((resolve,reject)=>{this.peer?.destroy();this.peer=new Peer();this.isHost=false;this.peer.on("open",id=>{this.myId=id;const conn=this.peer.connect(code);conn.on("open",()=>{this.connections[code]=conn;this.roomCode=code;conn.on("data",data=>game.onNetData(code,data));resolve(code);});conn.on("error",reject);});this.peer.on("error",reject);});}
-  sendTo(id,msg){try{this.connections[id]?.send(msg);}catch(_){}}
-  broadcast(msg){for(const id in this.connections)this.sendTo(id,msg);}
-  close(){try{this.peer?.destroy();}catch(_){}this.peer=null;this.connections={};}
+  host(){return new Promise((ok,no)=>{this.peer?.destroy();this.peer=new Peer();this.isHost=true;this.peer.on("open",id=>{this.myId=this.roomCode=id;ok(id);});this.peer.on("error",no);this.peer.on("connection",c=>{this.connections[c.peer]=c;c.on("data",d=>game.netData(c.peer,d));c.on("close",()=>delete game.remote[c.peer]);});});}
+  join(code){return new Promise((ok,no)=>{this.peer?.destroy();this.peer=new Peer();this.isHost=false;this.peer.on("open",id=>{this.myId=id;const c=this.peer.connect(code);c.on("open",()=>{this.connections[code]=c;this.roomCode=code;c.on("data",d=>game.netData(code,d));ok(code);});c.on("error",no);});this.peer.on("error",no);});}
+  send(id,d){try{this.connections[id]?.send(d);}catch(_){}}
+  broadcast(d){for(const id in this.connections)this.send(id,d);}
 }
 
 class Game{
   constructor(){
-    this.state="title";this.menuButtons=[];this.menuMessage="";this.joinCode="";
-    this.deviceMode="computer";this.touchMode=false;this.difficultyKey="news";this.difficulty=DIFFICULTIES.news;
-    this.net=new Net();this.remotePlayers={};this.pvpMode=false;this.player=null;
-    this.enemies=[];this.redBullets=[];this.redStrongBullets=[];this.redRockets=[];this.enemyBullets=[];this.enemyRockets=[];
-    this.equippedSkills=[];this.ownedSkills={shield:false,strike:false,lockon:false,fake:false,help:false};this.marks=0;
-    this.keys={};this.mousePos=[W/2,H/2];this.isShooting=false;this.autoShootAt=0;
-    this.lJoy={cx:0,cy:0,r:0,kx:0,ky:0,active:false};this.rJoy={cx:0,cy:0,r:0,kx:0,ky:0,active:false};
-    this.leftMoveDir=[0,0];this.rightAimAngle=0;this.rightFiring=false;this.touches=new Map();
-    this.modeButton={x:0,y:0,w:150,h:36};this.rocketButton={cx:0,cy:0};this.strongButton={cx:0,cy:0};this.skillButtons={};this.skillRadius=30;
-    this.touchFireRadius=58;this.touchFireCenter=null;this.lastSync=0;
+    this.state="title";this.menuButtons=[];this.message="";this.joinCode="";
+    this.net=new Net();this.remote={};this.coop=false;this.player=null;this.enemies=[];
+    this.enemyBullets=[];this.playerBullets=[];this.rockets=[];this.diff=DIFF.news;this.diffKey="news";
+    this.marks=0;this.skills=[];this.keys={};this.mouse=[W/2,H/2];this.mouseDown=false;
+    this.touch=false;this.touches=new Map();this.moveDir=[0,0];this.aim=0;this.touchShooting=false;this.autoAt=0;
+    this.joyL={x:0,y:0,r:0,kx:0,ky:0};this.joyR={x:0,y:0,r:0,kx:0,ky:0};
+    this.fireRadius=58;this.shopButtons=[];this.lastSync=0;
   }
-  setMenuButtons(items){
-    const w=Math.min(300,W-40),h=46,gap=10,total=items.length*h+(items.length-1)*gap,x=(W-w)/2,y=Math.max(120,(H-total)/2+35);
-    this.menuButtons=items.map((it,i)=>({x,y:y+i*(h+gap),w,h,label:it.label,action:it.action}));
+  setButtons(items){
+    const w=Math.min(310,W-40),h=46,g=9,total=items.length*(h+g)-g,x=(W-w)/2,y=Math.max(95,(H-total)/2+35);
+    this.menuButtons=items.map((it,i)=>({x,y:y+i*(h+g),w,h,label:it.label,action:it.action}));
   }
-  showTitle(){this.state="title";this.menuMessage="";this.menuButtons=[];}
-  showModeMenu(){this.state="mode";this.menuMessage="";this.setMenuButtons([{label:"Single Player",action:()=>this.showDifficultyMenu(false)},{label:"Co-op",action:()=>this.showCoopMenu()},{label:"Back",action:()=>this.showTitle()}]);}
-  showDifficultyMenu(isCoop){this.state="difficulty";this.menuMessage=isCoop?`Room code: ${this.net.roomCode}`:"";this.setMenuButtons([...Object.entries(DIFFICULTIES).map(([k,d])=>({label:d.name,action:()=>this.startGame(k,false,isCoop)})),{label:"Back",action:()=>isCoop?this.showCoopMenu():this.showModeMenu()}]);}
-  showCoopMenu(){this.state="coop";this.menuMessage="";this.setMenuButtons([{label:"Host Room",action:()=>this.hostRoom()},{label:"Join Room",action:()=>this.showJoinMenu()},{label:"Back",action:()=>this.showModeMenu()}]);}
-  showJoinMenu(){this.state="join";this.joinCode="";this.menuMessage="Type the room code, then press Enter or select Join.";this.setMenuButtons([{label:"Join Room",action:()=>this.joinRoom()},{label:"Back",action:()=>this.showCoopMenu()}]);}
-  async hostRoom(){this.state="waiting";this.menuButtons=[];this.menuMessage="Creating room…";try{await this.net.host();this.menuMessage=`Room code: ${this.net.roomCode}`;this.setMenuButtons([{label:"Choose Difficulty",action:()=>this.showDifficultyMenu(true)},{label:"Back",action:()=>this.showCoopMenu()}]);}catch(e){this.state="coop";this.menuMessage="Could not create room.";this.showCoopMenu();}}
-  async joinRoom(){const code=this.joinCode.trim();if(!code){this.menuMessage="Enter a room code first.";return;}this.state="waiting";this.menuButtons=[];this.menuMessage="Joining room…";try{await this.net.join(code);this.menuMessage="Connected. Waiting for host."; }catch(e){this.showJoinMenu();this.menuMessage="Could not join. Check code.";} }
-  handleMenuPointer(x,y){if(this.state==="title"){this.showModeMenu();return;}const b=this.menuButtons.find(b=>x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h);if(b)b.action();}
-  drawMenu(){
-    ctx.fillStyle="#0b0c10";ctx.fillRect(0,0,W,H);ctx.textAlign="center";ctx.textBaseline="middle";
-    const titles={title:"TRIANGLE BATTLE ARENA",mode:"SELECT MODE",difficulty:"SELECT DIFFICULTY",coop:"CO-OP",join:"JOIN ROOM",waiting:"ROOM"};
-    ctx.fillStyle="#00fff5";ctx.font="bold 30px Arial";ctx.fillText(titles[this.state]||"TRIANGLE BATTLE ARENA",W/2,H*.15);
-    if(this.state==="title"){ctx.fillStyle="#ddd";ctx.font="16px Arial";ctx.fillText("Press Enter or tap to continue",W/2,H*.58);}
-    if(this.state==="join"){ctx.fillStyle="#fff";ctx.font="18px Arial";ctx.fillText(`Room code: ${this.joinCode||"—"}`,W/2,H*.31);}
-    if(this.menuMessage){ctx.fillStyle="#ccc";ctx.font="14px Arial";ctx.fillText(this.menuMessage,W/2,H*.23);}
-    for(const b of this.menuButtons){ctx.fillStyle="#171827";ctx.fillRect(b.x,b.y,b.w,b.h);ctx.strokeStyle="#00fff5";ctx.lineWidth=2;ctx.strokeRect(b.x,b.y,b.w,b.h);ctx.fillStyle="#fff";ctx.font="16px Arial";ctx.fillText(b.label,b.x+b.w/2,b.y+b.h/2);}
-    ctx.textAlign="left";ctx.textBaseline="alphabetic";
+  title(){this.state="title";this.message="";this.menuButtons=[];}
+  modeMenu(){this.state="mode";this.message="";this.setButtons([{label:"Single Player",action:()=>{this.coop=false;this.diffMenu(false);}},{label:"Co-op",action:()=>this.coopMenu()}]);}
+  diffMenu(isCoop){this.state="difficulty";this.message=isCoop?`Room code: ${this.net.roomCode}`:"";this.setButtons([...Object.entries(DIFF).map(([k,d])=>({label:d.name,action:()=>this.start(k,isCoop)})),{label:"Back",action:()=>isCoop?this.roomMenu():this.modeMenu()}]);}
+  coopMenu(){this.state="coop";this.setButtons([{label:"Host Room",action:()=>this.host()},{label:"Join Room",action:()=>this.joinScreen()},{label:"Back",action:()=>this.modeMenu()}]);}
+  roomMenu(){this.state="room";this.message=this.net.roomCode?`Room code: ${this.net.roomCode}`:"Co-op room";this.setButtons([{label:"Choose Difficulty",action:()=>this.diffMenu(true)},{label:"Back",action:()=>this.coopMenu()}]);}
+  async host(){this.state="waiting";this.message="Creating room…";this.menuButtons=[];try{await this.net.host();this.roomMenu();}catch(e){this.coopMenu();this.message="Could not create room.";}}
+  joinScreen(){this.state="join";this.joinCode="";this.message="Type room code, then Enter.";this.setButtons([{label:"Join Room",action:()=>this.join()},{label:"Back",action:()=>this.coopMenu()}]);}
+  async join(){if(!this.joinCode){this.message="Enter a room code.";return;}this.state="waiting";this.message="Joining…";this.menuButtons=[];try{await this.net.join(this.joinCode);this.message="Connected; waiting for host."; }catch(e){this.joinScreen();this.message="Could not join room.";}}
+  start(key,coop){
+    this.diffKey=key;this.diff=DIFF[key];this.coop=coop;this.state="playing";this.marks=coop?9999:0;
+    this.player=new Player(Math.min(200,W/3),H/2,this.net.myId);this.player.skills=[...this.skills];this.player.score=this.marks;
+    this.enemies=[];this.enemyBullets=[];this.playerBullets=[];this.rockets=[];
+    const c=this.diff.start,n=c.yellow+c.purple+c.green;
+    for(let i=0;i<n;i++){const x=clamp(W*.65+(i%3)*35,40,W-40),y=clamp(100+Math.floor(i/3)*70,40,H-40);const t=i<c.yellow?"yellow":i<c.yellow+c.purple?"purple":"green";this.enemies.push(new Enemy(x,y,t));}
+    this.setupControls();
+    if(this.coop&&this.net.isHost)this.net.broadcast({type:"start",key,skills:this.skills});
   }
-  setupJoysticks(){
-    const r=Math.min(W,H)*.13;this.lJoy.r=this.rJoy.r=r;this.lJoy.cx=r+20;this.lJoy.cy=H-r-20;this.rJoy.cx=W-r-20;this.rJoy.cy=H-r-20;
-    if(!this.lJoy.active){this.lJoy.kx=this.lJoy.cx;this.lJoy.ky=this.lJoy.cy;}
-    if(!this.rJoy.active){this.rJoy.kx=this.rJoy.cx;this.rJoy.ky=this.rJoy.cy;}
-    this.rocketButton={cx:W-40,cy:55};this.strongButton={cx:W-110,cy:55};this.refreshSkillButtons();
-    /* Red touch-fire area is centered on the right aiming joystick. */
-    this.touchFireCenter={x:this.rJoy.cx,y:this.rJoy.cy};
+  setupControls(){
+    const r=Math.min(W,H)*.13;this.joyL={x:r+20,y:H-r-20,r,kx:r+20,ky:H-r-20};this.joyR={x:W-r-20,y:H-r-20,r,kx:W-r-20,ky:H-r-20};
+    this.fireCenter={x:this.joyR.x,y:this.joyR.y};
   }
-  refreshSkillButtons(){this.skillButtons={};let i=0;for(const k of ["shield","strike","lockon","fake","help"])if(this.player?.hasSkill(k)){this.skillButtons[k]={cx:W-180-i*66,cy:55};i++;}}
-  makeSpawnPoints(n){const p=[];for(let i=0;i<n;i++)p.push([clamp(W*.65+(i%3)*35,40,W-40),clamp(100+Math.floor(i/3)*75,40,H-40)]);return p;}
-  resetGame(){
-    this.player=new PlayerRed(200,H/2,60,this.net.myId);this.player.equipped=[...this.equippedSkills];this.player.pvpMode=this.pvpMode;this.player.score=this.marks;
-    this.redBullets=[];this.redStrongBullets=[];this.redRockets=[];this.enemyBullets=[];this.enemyRockets=[];this.enemies=[];
-    const c=this.difficulty.start,p=this.makeSpawnPoints(c.yellow+c.purple+c.green);let i=0;
-    for(let n=0;n<c.yellow;n++)this.enemies.push(new YellowTriangle(...p[i++]));
-    for(let n=0;n<c.purple;n++)this.enemies.push(new PurpleTriangle(...p[i++]));
-    for(let n=0;n<c.green;n++)this.enemies.push(new GreenTriangle(...p[i++]));
-    this.refreshSkillButtons();
+  netData(id,d){
+    if(d.type==="start"&&!this.net.isHost){this.skills=d.skills||[];this.start(d.key,true);}
+    if(d.type==="state"){this.remote[id]={...d.player,id,isAlive:d.player.hp>0,radius:18,takeDamage:n=>this.net.send(id,{type:"hit",damage:n})};if(this.net.isHost)for(const other in this.net.connections)if(other!==id)this.net.send(other,d);}
+    if(d.type==="hit")this.player?.takeDamage(d.damage);
   }
-  startGame(diffKey,pvp=false,broadcast=true){
-    this.difficultyKey=diffKey;this.difficulty=DIFFICULTIES[diffKey];this.pvpMode=pvp;this.state="playing";this.setupJoysticks();this.resetGame();
-    if(broadcast&&this.net.isHost)this.net.broadcast({type:"start",diff:diffKey,pvp,skills:this.equippedSkills});
+  sync(){if(this.player)this.net.broadcast({type:"state",player:{x:this.player.x,y:this.player.y,angle:this.player.angle,hp:this.player.hp,maxHp:60}});}
+  openShop(){if(this.state==="playing")this.state="shop";}
+  backFromShop(){this.state="playing";}
+  buySkill(key){
+    if(this.skills.includes(key)){this.message="Already owned.";return;}
+    if(this.skills.length>=5){this.message="Maximum 5 skills.";return;}
+    if(this.marks<SKILLS[key].cost){this.message="Not enough marks.";return;}
+    this.marks-=SKILLS[key].cost;this.skills.push(key);if(this.player)this.player.skills=[...this.skills];this.message=`Bought ${SKILLS[key].label}.`;
   }
-  onNetData(from,data){
-    if(!data?.type)return;
-    if(data.type==="state"){
-      this.remotePlayers[from]={...data.player,id:from,radius:18,isAlive:data.player.hp>0,takeDamage:d=>this.damageRemotePlayer(from,d),startCrashBounce:()=>{}};
-      if(this.net.isHost)for(const id in this.net.connections)if(id!==from)this.net.sendTo(id,{type:"state",player:{...data.player,id:from}});
-    }else if(data.type==="hit"){if(this.player?.isAlive)this.player.takeDamage(data.damage);}
-    else if(data.type==="enemy_hit"&&this.net.isHost){if(this.net.connections[data.targetId])this.net.sendTo(data.targetId,{type:"hit",damage:data.damage});}
-    else if(data.type==="start"&&!this.net.isHost){this.equippedSkills=data.skills||[];this.startGame(data.diff,!!data.pvp,false);}
-    else if(data.type==="leave")delete this.remotePlayers[from];
+  buyEnemy(type){
+    if(this.marks<SHOP_COST){this.message="Not enough marks.";return;}
+    this.marks-=SHOP_COST;
+    const x=Math.random()<.5?20:W-20,y=clamp(Math.random()*H,40,H-40);
+    this.enemies.push(new Enemy(x,y,type,this.net.myId));this.message=`Bought ${type} enemy.`;
   }
-  syncPlayer(){if(!this.player)return;this.net.broadcast({type:"state",player:{x:this.player.x,y:this.player.y,angle:this.player.angle,hp:this.player.hp,maxHp:this.player.maxHp}});}
-  damageRemotePlayer(id,d){if(id===this.net.myId)this.player?.takeDamage(d);else if(this.net.isHost)this.net.sendTo(id,{type:"hit",damage:d});else this.net.sendTo(this.net.roomCode,{type:"enemy_hit",targetId:id,damage:d});}
-  getCombatTargets(){
-    const a=[];if(this.player?.isAlive)a.push(this.player);
-    if(!this.pvpMode)for(const [id,p] of Object.entries(this.remotePlayers)){if(!p||p.hp<=0)continue;p.isAlive=true;p.radius=18;p.takeDamage=d=>this.damageRemotePlayer(id,d);p.startCrashBounce=()=>{};a.push(p);}
-    return a;
+  shopMenuItems(){
+    return [
+      {label:`Shield — ${SKILLS.shield.cost} marks`,action:()=>this.buySkill("shield")},
+      {label:`Strike — ${SKILLS.strike.cost} marks`,action:()=>this.buySkill("strike")},
+      {label:`Lock-on — ${SKILLS.lockon.cost} marks`,action:()=>this.buySkill("lockon")},
+      {label:`Fake — ${SKILLS.fake.cost} marks`,action:()=>this.buySkill("fake")},
+      {label:`Help — ${SKILLS.help.cost} marks`,action:()=>this.buySkill("help")},
+      {label:"Buy Yellow Enemy — 100 marks",action:()=>this.buyEnemy("yellow")},
+      {label:"Buy Green Enemy — 100 marks",action:()=>this.buyEnemy("green")},
+      {label:"Buy Purple Enemy — 100 marks",action:()=>this.buyEnemy("purple")},
+      {label:"Back to Match",action:()=>this.backFromShop()}
+    ];
   }
-  closestTarget(enemy,targets){let best=null,dist=Infinity;for(const t of targets)if(t.isAlive){const d=Math.hypot(t.x-enemy.x,t.y-enemy.y);if(d<dist){best=t;dist=d;}}return best;}
-  chooseEnemyType(){const m=this.difficulty.max,a=this.enemies.filter(e=>e.isAlive),n=T=>a.filter(e=>e instanceof T).length,opts=[];if(n(YellowTriangle)<m.yellow)opts.push("yellow");if(n(PurpleTriangle)<m.purple)opts.push("purple");if(n(GreenTriangle)<m.green)opts.push("green");return opts.length?opts[Math.floor(Math.random()*opts.length)]:null;}
-  spawnEnemy(){const type=this.chooseEnemyType();if(!type)return null;const side=Math.floor(Math.random()*4),x=side<2?Math.random()*W:(side===2?20:W-20),y=side<2?(side===0?20:H-20):Math.random()*H;return type==="yellow"?new YellowTriangle(x,y):type==="purple"?new PurpleTriangle(x,y):new GreenTriangle(x,y);}
-  onPointerDown(id,x,y){
-    if(this.state!=="playing"){this.handleMenuPointer(x,y);return;}
-    if(x>=this.modeButton.x&&x<=this.modeButton.x+this.modeButton.w&&y>=this.modeButton.y&&y<=this.modeButton.y+this.modeButton.h){this.toggleMode();return;}
-    if(!this.touchMode){if(id==="mouse"){this.isShooting=true;this.mousePos=[x,y];}return;}
-    for(const [key,b] of Object.entries(this.skillButtons))if(Math.hypot(x-b.cx,y-b.cy)<this.skillRadius){this.touches.set(id,key);if(key==="shield")this.player.activateShield();if(key==="strike")this.player.tryArmStrike();if(key==="lockon")this.player.activateLockon();if(key==="fake")this.player.activateFake();if(key==="help")this.player.activateHelp();return;}
-    if(Math.hypot(x-this.rocketButton.cx,y-this.rocketButton.cy)<this.skillRadius){this.touches.set(id,"rocket");this.redRockets.push(...this.player.fireRockets(this.enemies));return;}
-    if(Math.hypot(x-this.strongButton.cx,y-this.strongButton.cy)<this.skillRadius){this.touches.set(id,"strong");const b=this.player.fireStrongBullet(this.enemies);if(b)this.redStrongBullets.push(b);return;}
-    /* Only a press inside the red circle can shoot. */
-    const fc=this.touchFireCenter;
-    if(fc&&Math.hypot(x-fc.x,y-fc.y)<=this.touchFireRadius){
-      this.touches.set(id,"fireAim");this.rightFiring=true;this.rJoy.active=true;this.updateJoystick(this.rJoy,x,y);return;
+  pointDown(id,x,y){
+    if(this.state==="dead"){this.returnAfterDeath();return;}
+    if(this.state==="playing"){
+      if(x>W-112&&y<58){this.openShop();return;}
+      if(!this.touch){if(id==="mouse"){this.mouseDown=true;this.mouse=[x,y];}return;}
+      if(Math.hypot(x-this.fireCenter.x,y-this.fireCenter.y)<=this.fireRadius){
+        this.touches.set(id,"fire");this.touchShooting=true;this.joyR.kx=x;this.joyR.ky=y;this.aim=Math.atan2(y-this.joyR.y,x-this.joyR.x);return;
+      }
+      if(x<W/2){this.touches.set(id,"move");this.setJoy(this.joyL,x,y);}
+      else {this.touches.set(id,"aim");this.setJoy(this.joyR,x,y);}
+      return;
     }
-    const left=x<W/2,joy=left?this.lJoy:this.rJoy;this.touches.set(id,left?"move":"aim");joy.active=true;this.updateJoystick(joy,x,y);
+    const b=this.menuButtons.find(b=>x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h);if(b)b.action();
   }
-  onPointerMove(id,x,y){
-    if(!this.touchMode){if(id==="mouse")this.mousePos=[x,y];return;}
+  pointMove(id,x,y){
+    if(!this.touch){if(id==="mouse")this.mouse=[x,y];return;}
     const role=this.touches.get(id);
-    if(role==="move")this.updateJoystick(this.lJoy,x,y);
-    if(role==="aim"||role==="fireAim")this.updateJoystick(this.rJoy,x,y);
+    if(role==="move")this.setJoy(this.joyL,x,y);
+    if(role==="aim"||role==="fire")this.setJoy(this.joyR,x,y);
   }
-  onPointerUp(id){
-    const role=this.touches.get(id);
-    if(role==="mouse")this.isShooting=false;
-    if(role==="move"){this.lJoy.active=false;this.lJoy.kx=this.lJoy.cx;this.lJoy.ky=this.lJoy.cy;this.leftMoveDir=[0,0];}
-    if(role==="aim"||role==="fireAim"){
-      this.rJoy.active=false;this.rJoy.kx=this.rJoy.cx;this.rJoy.ky=this.rJoy.cy;this.rightFiring=false;
-      if(this.player?.strikePending)this.player.beginStrike(this.rightAimAngle);
-    }
+  pointUp(id){
+    const role=this.touches.get(id);if(role==="mouse")this.mouseDown=false;
+    if(role==="move"){this.moveDir=[0,0];this.joyL.kx=this.joyL.x;this.joyL.ky=this.joyL.y;}
+    if(role==="aim"||role==="fire"){this.touchShooting=false;this.joyR.kx=this.joyR.x;this.joyR.ky=this.joyR.y;}
     this.touches.delete(id);
   }
-  updateJoystick(j,x,y){
-    let dx=x-j.cx,dy=y-j.cy,d=Math.hypot(dx,dy);if(d>j.r){dx=dx/d*j.r;dy=dy/d*j.r;}
-    j.kx=j.cx+dx;j.ky=j.cy+dy;
-    if(j===this.lJoy){const l=Math.hypot(dx,dy);this.leftMoveDir=l>5?[dx/l,dy/l]:[0,0];}
-    else if(d>5)this.rightAimAngle=Math.atan2(dy,dx);
+  setJoy(j,x,y){
+    let dx=x-j.x,dy=y-j.y,d=Math.hypot(dx,dy);if(d>j.r){dx=dx/d*j.r;dy=dy/d*j.r;}j.kx=j.x+dx;j.ky=j.y+dy;
+    if(j===this.joyL){const l=Math.hypot(dx,dy);this.moveDir=l>5?[dx/l,dy/l]:[0,0];}
+    else if(Math.hypot(dx,dy)>5)this.aim=Math.atan2(dy,dx);
   }
-  toggleMode(){this.touchMode=!this.touchMode;this.deviceMode=this.touchMode?"mobile":"computer";this.isShooting=false;this.rightFiring=false;this.leftMoveDir=[0,0];this.touches.clear();this.lJoy.active=false;this.rJoy.active=false;this.setupJoysticks();}
-  onKey(key,down){
-    key=key.toLowerCase();
-    if(this.state==="title"&&down&&key==="enter"){this.showModeMenu();return;}
-    if(this.state==="join"&&down){if(key==="enter"){this.joinRoom();return;}if(key==="backspace"){this.joinCode=this.joinCode.slice(0,-1);return;}if(/^[a-z0-9]$/i.test(key)){this.joinCode+=key.toUpperCase();return;}}
-    this.keys[key]=down;if(!down||this.state!=="playing"||!this.player)return;
-    if(key==="m"){this.toggleMode();return;}if(this.touchMode||!this.player.isAlive)return;
-    if(key==="c"){const b=this.player.fireStrongBullet(this.enemies);if(b)this.redStrongBullets.push(b);}
-    else if(key==="e")this.redRockets.push(...this.player.fireRockets(this.enemies));
-    else if(key==="q")this.player.activateShield();
-    else if(key==="f"){this.player.tryArmStrike();if(this.player.strikePending){const a=Math.atan2(this.mousePos[1]-this.player.y,this.mousePos[0]-this.player.x);this.player.beginStrike(a);}}
-    else if(key==="g")this.player.activateFake();else if(key==="h")this.player.activateHelp();else if(key===" ")this.player.triggerDash();
+  returnAfterDeath(){this.net.broadcast({type:"leave"});this.player=null;this.state=this.coop?"room":"mode";if(this.coop)this.roomMenu();else this.modeMenu();}
+  key(key,down){
+    const k=key.toLowerCase();
+    if(this.state==="dead"&&down){this.returnAfterDeath();return;}
+    if(this.state==="join"&&down){if(k==="enter"){this.join();return;}if(k==="backspace"){this.joinCode=this.joinCode.slice(0,-1);return;}if(/^[a-z0-9]$/i.test(k)){this.joinCode+=k.toUpperCase();return;}}
+    this.keys[k]=down;
+    if(!down)return;
+    if(this.state==="title"&&k==="enter"){this.modeMenu();return;}
+    if(this.state==="playing"&&k==="escape"){this.openShop();return;}
+    if(this.state==="playing"&&this.player){
+      if(k==="e")this.rockets.push(...this.player.fireRockets(this.enemies));
+      if(k==="c"){const b=this.player.fireStrong(this.enemies);if(b)this.playerBullets.push(b);}
+      if(k===" " )this.player.dashUntil=now()+.18;
+      if(k==="q"&&this.player.has("shield")&&now()-this.player.lastShield>30){this.player.shield=10;this.player.lastShield=now();}
+    }
   }
   update(){
     if(this.state!=="playing"||!this.player)return;
-    const t=now(),targets=this.getCombatTargets(),aim=this.touchMode?this.rightAimAngle:Math.atan2(this.mousePos[1]-this.player.y,this.mousePos[0]-this.player.x);
-    if(!this.player.isStriking){const firing=this.touchMode?this.rightFiring:this.isShooting;if(firing&&this.player.isAlive&&t>=this.autoShootAt){this.autoShootAt=t+.1;this.redBullets.push(new Bullet(this.player.x,this.player.y,aim,12,5,"#00fff5"));}}
-    let dx=0,dy=0;if(this.touchMode)[dx,dy]=this.leftMoveDir;else{if(this.keys.w||this.keys.arrowup)dy--;if(this.keys.s||this.keys.arrowdown)dy++;if(this.keys.a||this.keys.arrowleft)dx--;if(this.keys.d||this.keys.arrowright)dx++;}
-    const ml=Math.hypot(dx,dy);if(ml){dx/=ml;dy/=ml;}this.player.move(dx,dy,aim);this.player.updateStrike();
-    if(this.player.helpActive){if(t-this.player.helpStart>=this.player.helpDuration){this.player.helpActive=false;this.player.helpLastUsed=t;this.player.helpers=[];}else for(const h of this.player.helpers)h.update(this.player,this.enemies);}
-    for(const e of this.enemies){const target=this.closestTarget(e,targets);if(!target)continue;
-      if(e instanceof YellowTriangle){const a=Math.atan2(e.y-target.y,e.x-target.x),d=Math.atan2(Math.sin(a-target.angle),Math.cos(a-target.angle));e.beingAimedAt=Math.abs(d)<=Math.PI/18;e.update(target,this.enemyBullets);}
-      else if(e instanceof GreenTriangle)e.update(target,this.enemyBullets);else e.update(target,this.enemyBullets);
+    if(!this.player.isAlive){this.state="dead";return;}
+    let dx=0,dy=0;
+    if(this.touch)[dx,dy]=this.moveDir;
+    else{if(this.keys.w||this.keys.arrowup)dy--;if(this.keys.s||this.keys.arrowdown)dy++;if(this.keys.a||this.keys.arrowleft)dx--;if(this.keys.d||this.keys.arrowright)dx++;}
+    const l=Math.hypot(dx,dy);if(l){dx/=l;dy/=l;}
+    const aim=this.touch?this.aim:Math.atan2(this.mouse[1]-this.player.y,this.mouse[0]-this.player.x);
+    this.player.move(dx,dy,aim);
+    const firing=this.touch?this.touchShooting:this.mouseDown;
+    if(firing&&now()>=this.autoAt){this.autoAt=now()+.1;this.playerBullets.push(new Bullet(this.player.x,this.player.y,aim,12,5,"#00fff5"));}
+    const players=[this.player,...Object.values(this.remote).filter(p=>p?.isAlive)];
+    for(const e of this.enemies)e.update(players,this.enemyBullets);
+    for(const p of [...this.playerBullets,...this.enemyBullets,...this.rockets])p.update();
+    for(const b of this.playerBullets)if(b.active)for(const e of this.enemies)if(e.isAlive&&Math.hypot(b.x-e.x,b.y-e.y)<b.radius+e.radius){e.takeDamage(b.damage);if(!b.piercing)b.active=false;break;}
+    for(const r of this.rockets)if(r.active)for(const e of this.enemies)if(e.isAlive&&Math.hypot(r.x-e.x,r.y-e.y)<r.radius+e.radius){e.takeDamage(2);r.active=false;break;}
+    for(const b of this.enemyBullets)if(b.active)for(const p of players)if(p.isAlive&&Math.hypot(b.x-p.x,b.y-p.y)<b.radius+p.radius){p.takeDamage(b.damage);b.active=false;break;}
+    const next=[];
+    for(const e of this.enemies){
+      if(e.isAlive)next.push(e);
+      else{this.player.score+=200;this.marks+=200;this.player.kills++;const type=["yellow","green","purple"][Math.floor(Math.random()*3)];next.push(new Enemy(Math.random()*W,Math.random()*H,type));}
     }
-    if(this.player.isStriking)for(const e of this.enemies)if(e.isAlive&&Math.hypot(this.player.x-e.x,this.player.y-e.y)<e.radius+this.player.radius)e.takeDamage(99);
-    const projectiles=[...this.redBullets,...this.redStrongBullets,...this.redRockets,...this.enemyBullets,...this.enemyRockets];for(const p of projectiles)p.update();
-    for(const b of [...this.redBullets,...this.redStrongBullets])if(b.active)for(const e of this.enemies)if(e.isAlive&&Math.hypot(b.x-e.x,b.y-e.y)<b.radius+e.radius){e.takeDamage(b instanceof StrongBullet?99:1);if(!b.piercing)b.active=false;break;}
-    for(const r of this.redRockets)if(r.active)for(const e of this.enemies)if(e.isAlive&&Math.hypot(r.x-e.x,r.y-e.y)<r.radius+e.radius){e.takeDamage(r.damage*2);r.active=false;break;}
-    for(const b of this.enemyBullets)if(b.active)for(const target of targets)if(target.isAlive&&Math.hypot(b.x-target.x,b.y-target.y)<b.radius+(target.radius||18)){target.takeDamage(b.damageMult||1);if(!b.piercing)b.active=false;break;}
-    for(const r of this.enemyRockets)if(r.active)for(const target of targets)if(target.isAlive&&Math.hypot(r.x-target.x,r.y-target.y)<r.radius+(target.radius||18)){target.takeDamage(1);r.active=false;break;}
-    const survivors=[];for(const e of this.enemies){if(e.isAlive)survivors.push(e);else{this.player.score+=200;this.player.kills++;const replacement=this.spawnEnemy();if(replacement)survivors.push(replacement);}}
-    this.enemies=survivors;
-    this.redBullets=this.redBullets.filter(b=>b.active);this.redStrongBullets=this.redStrongBullets.filter(b=>b.active);this.redRockets=this.redRockets.filter(r=>r.active);this.enemyBullets=this.enemyBullets.filter(b=>b.active);this.enemyRockets=this.enemyRockets.filter(r=>r.active);
-    if(t-(this.lastSync||0)>.05){this.lastSync=t;this.syncPlayer();}
+    this.enemies=next;this.playerBullets=this.playerBullets.filter(b=>b.active);this.enemyBullets=this.enemyBullets.filter(b=>b.active);this.rockets=this.rockets.filter(r=>r.active);
+    if(now()-this.lastSync>.08){this.lastSync=now();this.sync();}
   }
-  drawButton(x,y,w,h,label,color){ctx.fillStyle="#171827";ctx.fillRect(x,y,w,h);ctx.strokeStyle=color;ctx.lineWidth=2;ctx.strokeRect(x,y,w,h);ctx.fillStyle=color;ctx.textAlign="center";ctx.textBaseline="middle";ctx.font="12px Arial";ctx.fillText(label,x+w/2,y+h/2);ctx.textAlign="left";ctx.textBaseline="alphabetic";}
-  drawJoystick(j,color){ctx.strokeStyle=color;ctx.lineWidth=3;ctx.globalAlpha=.6;ctx.beginPath();ctx.arc(j.cx,j.cy,j.r,0,Math.PI*2);ctx.stroke();ctx.fillStyle=color;ctx.beginPath();ctx.arc(j.kx,j.ky,j.r*.35,0,Math.PI*2);ctx.fill();ctx.globalAlpha=1;}
+  drawMenu(title){
+    ctx.fillStyle="#0b0c10";ctx.fillRect(0,0,W,H);ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillStyle="#00fff5";ctx.font="bold 28px Arial";ctx.fillText(title,W/2,H*.14);
+    if(this.message){ctx.fillStyle="#ddd";ctx.font="14px Arial";ctx.fillText(this.message,W/2,H*.22);}
+    if(this.state==="join"){ctx.fillStyle="#fff";ctx.font="18px Arial";ctx.fillText("Room code: "+(this.joinCode||"—"),W/2,H*.3);}
+    for(const b of this.menuButtons)button(b.x,b.y,b.w,b.h,b.label);
+    ctx.textAlign="left";ctx.textBaseline="alphabetic";
+  }
   draw(){
-    ctx.fillStyle="#0b0c10";ctx.fillRect(0,0,W,H);if(this.state!=="playing"){this.drawMenu();return;}
-    for(const p of Object.values(this.remotePlayers))if(p&&p.hp>0){drawTri(p.x,p.y,18,p.angle||0,"#ff8fa3");drawHpBar(p.x,p.y,p.hp,p.maxHp||60,"#06d6a0");}
-    for(const h of this.player.helpers)h.draw();for(const e of this.enemies)e.draw();
-    for(const p of [...this.redBullets,...this.redStrongBullets,...this.redRockets,...this.enemyBullets,...this.enemyRockets])p.draw();
-    if(this.player.isAlive){drawTri(this.player.x,this.player.y,this.player.radius,this.player.angle,"#ff2e63");drawHpBar(this.player.x,this.player.y,this.player.hp,this.player.maxHp,"#06d6a0");}
-    ctx.fillStyle="#eee";ctx.font="13px Arial";ctx.fillText(`HP: ${this.player.hp}/${this.player.maxHp}   Marks: ${this.player.score}`,10,18);
-    ctx.fillText("Skills: "+(this.equippedSkills.length?this.equippedSkills.map(k=>SKILLS[k]?.name||k).join(" · "):"None"),10,36);
-    this.modeButton.x=W-160;this.modeButton.y=10;this.drawButton(this.modeButton.x,this.modeButton.y,this.modeButton.w,this.modeButton.h,this.touchMode?"Touch mode":"Computer mode",this.touchMode?"#00fff5":"#ff2e63");
-    if(this.touchMode){
-      this.drawJoystick(this.lJoy,"#00fff5");
-      /* Red circle marks the only area that starts ordinary shooting. */
-      ctx.strokeStyle="#ff2e63";ctx.lineWidth=3;ctx.globalAlpha=.75;ctx.beginPath();ctx.arc(this.touchFireCenter.x,this.touchFireCenter.y,this.touchFireRadius,0,Math.PI*2);ctx.stroke();ctx.globalAlpha=1;
-      this.drawJoystick(this.rJoy,"#ff2e63");
-      this.drawButton(W-62,85,52,40,"ROCKET","#ff9f1c");this.drawButton(W-122,85,52,40,"POWER","#ff2e63");
+    ctx.fillStyle="#0b0c10";ctx.fillRect(0,0,W,H);
+    if(this.state==="title"){this.drawMenu("TRIANGLE BATTLE ARENA");ctx.fillStyle="#ddd";ctx.textAlign="center";ctx.fillText("Press Enter or tap",W/2,H*.68);return;}
+    if(this.state==="mode"){this.drawMenu("SELECT MODE");return;}
+    if(this.state==="coop"){this.drawMenu("CO-OP");return;}
+    if(this.state==="room"){this.drawMenu("CO-OP ROOM");return;}
+    if(this.state==="difficulty"){this.drawMenu("SELECT DIFFICULTY");return;}
+    if(this.state==="join"){this.drawMenu("JOIN ROOM");return;}
+    if(this.state==="waiting"){this.drawMenu("ROOM");return;}
+    if(this.state==="dead"){
+      ctx.fillStyle="rgba(0,0,0,.8)";ctx.fillRect(0,0,W,H);ctx.fillStyle="#ff2e63";ctx.font="bold 34px Arial";ctx.textAlign="center";ctx.fillText("GAME OVER",W/2,H/2-20);ctx.fillStyle="#fff";ctx.font="18px Arial";ctx.fillText("Press any key or touch anywhere to return",W/2,H/2+25);ctx.textAlign="left";return;
     }
-    if(!this.player.isAlive){ctx.fillStyle="rgba(0,0,0,.65)";ctx.fillRect(0,0,W,H);ctx.fillStyle="#ff2e63";ctx.font="bold 30px Arial";ctx.textAlign="center";ctx.fillText("GAME OVER",W/2,H/2);ctx.textAlign="left";}
+    if(this.state==="playing"||this.state==="shop"){
+      for(const p of Object.values(this.remote))if(p?.isAlive){drawTri(p.x,p.y,18,p.angle||0,"#ff8fa3");hpBar(p.x,p.y,p.hp,60,"#06d6a0");}
+      for(const e of this.enemies)e.draw();for(const b of [...this.playerBullets,...this.enemyBullets,...this.rockets])b.draw();
+      if(this.player?.isAlive){drawTri(this.player.x,this.player.y,18,this.player.angle,"#ff2e63");hpBar(this.player.x,this.player.y,this.player.hp,60,"#06d6a0");}
+      ctx.fillStyle="#fff";ctx.font="14px Arial";ctx.fillText(`HP ${this.player.hp}/60   Marks ${this.marks}`,10,20);
+      button(W-112,10,102,38,"SHOP","#ff2e63");
+      if(this.touch){
+        ctx.strokeStyle="#00fff5";ctx.lineWidth=2;ctx.globalAlpha=.55;ctx.beginPath();ctx.arc(this.joyL.x,this.joyL.y,this.joyL.r,0,Math.PI*2);ctx.stroke();
+        ctx.strokeStyle="#ff2e63";ctx.beginPath();ctx.arc(this.fireCenter.x,this.fireCenter.y,this.fireRadius,0,Math.PI*2);ctx.stroke();
+        ctx.beginPath();ctx.arc(this.joyR.x,this.joyR.y,this.joyR.r,0,Math.PI*2);ctx.stroke();ctx.globalAlpha=1;
+        ctx.fillStyle="#fff";ctx.font="12px Arial";ctx.textAlign="center";ctx.fillText("SHOOT",this.fireCenter.x,this.fireCenter.y);ctx.textAlign="left";
+      }
+      if(this.state==="shop"){
+        ctx.fillStyle="rgba(0,0,0,.82)";ctx.fillRect(0,0,W,H);
+        ctx.fillStyle="#00fff5";ctx.font="bold 26px Arial";ctx.textAlign="center";ctx.fillText(`SHOP — ${this.marks} MARKS`,W/2,32);
+        if(this.message){ctx.fillStyle="#fff";ctx.font="14px Arial";ctx.fillText(this.message,W/2,58);}
+        const items=this.shopMenuItems(),w=Math.min(340,W-30),h=Math.min(42,(H-92)/items.length),x=(W-w)/2,y=75;
+        this.shopButtons=items.map((it,i)=>({x,y:y+i*(h+5),w,h,label:it.label,action:it.action}));
+        for(const b of this.shopButtons)button(b.x,b.y,b.w,b.h,b.label,"#00fff5");
+        ctx.textAlign="left";
+      }
+    }
   }
 }
-
 game=new Game();
-function pointerId(e){return e.pointerType==="mouse"?"mouse":String(e.pointerId);}
-function pointerXY(e){const r=canvas.getBoundingClientRect();return[e.clientX-r.left,e.clientY-r.top];}
+
+function idOf(e){return e.pointerType==="mouse"?"mouse":String(e.pointerId);}
+function xy(e){const r=canvas.getBoundingClientRect();return[e.clientX-r.left,e.clientY-r.top];}
 canvas.addEventListener("pointerdown",e=>{
   e.preventDefault();
-  if(e.pointerType==="touch"&&!game.touchMode){game.touchMode=true;game.deviceMode="mobile";game.isShooting=false;game.touches.clear();game.leftMoveDir=[0,0];game.rightFiring=false;game.lJoy.active=false;game.rJoy.active=false;game.setupJoysticks();}
-  const [x,y]=pointerXY(e);game.onPointerDown(pointerId(e),x,y);
+  if(e.pointerType==="touch")game.touch=true;
+  const [x,y]=xy(e);
+  if(game.state==="shop"){
+    const b=game.shopButtons.find(b=>x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h);
+    if(b)b.action();return;
+  }
+  game.pointDown(idOf(e),x,y);
 },{passive:false});
-canvas.addEventListener("pointermove",e=>{const[x,y]=pointerXY(e);game.onPointerMove(pointerId(e),x,y);});
-canvas.addEventListener("pointerup",e=>game.onPointerUp(pointerId(e)));
-canvas.addEventListener("pointercancel",e=>game.onPointerUp(pointerId(e)));
-addEventListener("keydown",e=>{game.onKey(e.key,true);if([" ","arrowup","arrowdown","arrowleft","arrowright"].includes(e.key.toLowerCase()))e.preventDefault();});
-addEventListener("keyup",e=>game.onKey(e.key,false));
+canvas.addEventListener("pointermove",e=>{const[x,y]=xy(e);game.pointMove(idOf(e),x,y);});
+canvas.addEventListener("pointerup",e=>game.pointUp(idOf(e)));
+canvas.addEventListener("pointercancel",e=>game.pointUp(idOf(e)));
+addEventListener("keydown",e=>{game.key(e.key,true);if([" ","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.key))e.preventDefault();});
+addEventListener("keyup",e=>game.key(e.key,false));
 resize();
-function loop(){game.update();game.draw();requestAnimationFrame(loop);}
-requestAnimationFrame(loop);
+
+function frame(){game.update();game.draw();requestAnimationFrame(frame);}
+requestAnimationFrame(frame);
 </script>
 </body>
 </html>
