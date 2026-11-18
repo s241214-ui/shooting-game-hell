@@ -6,7 +6,11 @@
 <title>Triangle Battle Arena</title>
 <style>
 *{box-sizing:border-box}
-html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#0b0c10;color:#fff;font-family:Arial,sans-serif;touch-action:none;user-select:none}
+html,body{
+  margin:0;width:100%;height:100%;overflow:hidden;
+  background:#0b0c10;color:#fff;font-family:Arial,sans-serif;
+  touch-action:none;user-select:none
+}
 canvas{display:block;width:100%;height:100%;touch-action:none}
 </style>
 </head>
@@ -39,7 +43,9 @@ const distance=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
 const angleTo=(a,b)=>Math.atan2(b.y-a.y,b.x-a.x);
 
 function resize(){
-  W=innerWidth;H=innerHeight;DPR=devicePixelRatio||1;
+  W=innerWidth;
+  H=innerHeight;
+  DPR=devicePixelRatio||1;
   canvas.width=Math.round(W*DPR);
   canvas.height=Math.round(H*DPR);
   ctx.setTransform(DPR,0,0,DPR,0,0);
@@ -63,7 +69,7 @@ function drawButton(r,s,color="#00fff5",small=false){
   drawText(s,r.x+r.w/2,r.y+r.h/2,small?10:14,"#fff","center","bold");
 }
 function drawTriangle(x,y,r,a,color){
-  // Triangle's point is its forward direction; a is the aim direction.
+  // The triangle tip points in its aim direction.
   ctx.save();
   ctx.translate(x,y);
   ctx.rotate(a);
@@ -130,13 +136,10 @@ class Rocket{
 class Player{
   constructor(id,x,y,color,controls){
     Object.assign(this,{
-      id,x,y,color,controls,
-      a:0,hp:60,maxHp:60,alive:true,marks:0,r:18,
+      id,x,y,color,controls,a:0,hp:60,maxHp:60,alive:true,marks:0,r:18,
       skills:[],cooldowns:{},shield:0,dash:0,lastShot:0,
       strongReady:0,rocketReady:0,
-      moveStick:{x:0,y:0},
-      touchAim:null,
-      touchFire:false
+      moveStick:{x:0,y:0},touchAim:null
     });
   }
   damage(amount){
@@ -169,18 +172,16 @@ class Player{
     }
     this.dash=Math.max(0,this.dash-dt);
 
-    // Update facing before shooting; visible triangle and shots share this angle.
+    // Touch aim controls direction. Computer mode aims at the mouse.
     if(this.touchAim!==null){
       this.a=this.touchAim;
     }else if(g.controlMode==="computer"&&g.mouseAim&&g.activePlayer===this){
       this.a=angleTo(this,g.mouseAim);
     }
 
-    const firing=this.touchFire||
-      (g.controlMode==="computer"&&(
-        g.keys[this.controls.fire]||
-        (g.mouseDown&&g.activePlayer===this)
-      ));
+    const firing=g.controlMode==="computer"&&(
+      g.keys[this.controls.fire]||(g.mouseDown&&g.activePlayer===this)
+    );
 
     if(firing&&g.time-this.lastShot>.11){
       this.lastShot=g.time;
@@ -218,7 +219,6 @@ class Player{
     if(!this.alive||(this.cooldowns.lockon||0)>g.time)return;
     const target=closest(this,g.targetsFor(this));
     if(!target){g.notify("No target for Lock-on");return;}
-
     this.a=angleTo(this,target);
     g.bullets.push(new Bullet(this,this.x,this.y,this.a,15,4,"#f9c74f",true));
     this.cooldowns.lockon=g.time+1;
@@ -250,19 +250,16 @@ class Enemy{
   }
   update(dt,g){
     if(!this.alive)return;
-    const targets=g.players.filter(p=>p.alive&&p.id!==this.ownerId);
-    const target=closest(this,targets);
+    const target=closest(this,g.players.filter(p=>p.alive&&p.id!==this.ownerId));
     if(!target)return;
-
     this.a=angleTo(this,target);
 
-    // Yellow enemies chase the player and shoot when in range.
+    // Yellow enemies chase and shoot at players.
     if(this.type==="yellow"){
       const d=distance(this,target);
-      const speed=100*SPEED;
       if(d>35){
-        this.x+=Math.cos(this.a)*speed*dt;
-        this.y+=Math.sin(this.a)*speed*dt;
+        this.x+=Math.cos(this.a)*100*SPEED*dt;
+        this.y+=Math.sin(this.a)*100*SPEED*dt;
       }
       if(d<460&&g.time-this.lastShot>1.05){
         this.lastShot=g.time;
@@ -273,7 +270,7 @@ class Enemy{
       return;
     }
 
-    // Green enemy charges across the screen. Its path can be dodged.
+    // Green enemies charge across the arena.
     if(this.type==="green"){
       if(!this.chargeAt)this.chargeAt=g.time+2;
       if(this.state==="charging"){
@@ -356,6 +353,8 @@ class Game{
       y:H*.34,w:Math.min(W-32,340),h:48,g:10
     };
     const radius=Math.min(105,Math.max(72,W*.20));
+
+    // Left joystick aims. Right joystick moves.
     this.leftCircle={x:radius+18,y:H-radius-20,r:radius};
     this.rightCircle={x:W-radius-18,y:H-radius-20,r:radius};
     this.shopRect={x:W-112,y:10,w:102,h:38};
@@ -478,7 +477,6 @@ class Game{
         drawText("GAME OVER",W/2,H*.42,36,"#ff2e63","center","bold");
         drawText(winner?`PLAYER ${winner.id} WINS`:"You were defeated",W/2,H*.51,20);
       }
-
       drawText("Tap or press a key to return to mode selection",W/2,H*.60,14,"#ddd");
       return;
     }
@@ -495,7 +493,6 @@ class Game{
 
     for(const player of this.players){
       if(!player.alive)continue;
-      // Player triangle orientation uses the same angle as aiming and bullets.
       drawTriangle(player.x,player.y,player.r,player.a,player.color);
       drawHealth(player.x,player.y,player.hp,player.maxHp,player.color);
 
@@ -529,8 +526,8 @@ class Game{
   }
 
   drawTouchControls(){
-    this.drawStick(this.leftCircle,"#00fff5","MOVE","move");
-    this.drawStick(this.rightCircle,"#ff2e63","AIM + FIRE","aim");
+    this.drawStick(this.leftCircle,"#ff2e63","AIM","aim");
+    this.drawStick(this.rightCircle,"#00fff5","MOVE","move");
   }
 
   drawStick(circle,color,title,type){
@@ -629,8 +626,10 @@ class Game{
     const player=this.players[0];
     if(!stick||!player)return;
 
-    const circle=stick.type==="move"?this.leftCircle:this.rightCircle;
-    let dx=x-circle.x,dy=y-circle.y;
+    // Left joystick aims. Right joystick moves.
+    const circle=stick.type==="aim"?this.leftCircle:this.rightCircle;
+    let dx=x-circle.x;
+    let dy=y-circle.y;
     const length=Math.hypot(dx,dy);
     const max=circle.r*.65;
 
@@ -641,21 +640,16 @@ class Game{
     stick.x=circle.x+dx;
     stick.y=circle.y+dy;
 
-    if(stick.type==="move"){
+    if(stick.type==="aim"){
+      // Only change aim; do not move the player.
+      if(length>5)player.touchAim=Math.atan2(dy,dx);
+    }else{
+      // Only move the player; do not change aim.
       if(length>5){
-        const amount=Math.min(1,length/max);
-        player.moveStick={x:dx/length*amount,y:dy/length*amount};
+        const strength=Math.min(1,length/max);
+        player.moveStick={x:dx/length*strength,y:dy/length*strength};
       }else{
         player.moveStick={x:0,y:0};
-      }
-    }else{
-      if(length>5){
-        // Aim is measured from the player's position to the joystick direction.
-        // This makes triangle direction and projectile direction match.
-        player.touchAim=Math.atan2(dy,dx);
-        player.touchFire=true;
-      }else{
-        player.touchFire=false;
       }
     }
   }
@@ -693,25 +687,24 @@ class Game{
     const ability=this.abilityButtons.find(b=>
       x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h
     );
-    if(ability){
-      ability.run();
-      return;
-    }
+    if(ability){ability.run();return;}
 
     if(this.controlMode==="touch"){
+      // Left circle: aim direction only.
       if(Math.hypot(x-this.leftCircle.x,y-this.leftCircle.y)<=this.leftCircle.r){
-        this.sticks.set(id,{type:"move",x:this.leftCircle.x,y:this.leftCircle.y});
+        this.sticks.set(id,{type:"aim",x:this.leftCircle.x,y:this.leftCircle.y});
         this.updateStick(id,x,y);
         return;
       }
 
+      // Right circle: movement only.
       if(Math.hypot(x-this.rightCircle.x,y-this.rightCircle.y)<=this.rightCircle.r){
-        this.sticks.set(id,{type:"aim",x:this.rightCircle.x,y:this.rightCircle.y});
+        this.sticks.set(id,{type:"move",x:this.rightCircle.x,y:this.rightCircle.y});
         this.updateStick(id,x,y);
         return;
       }
 
-      // All other touchscreen taps are ignored.
+      // Touches outside the joystick circles and buttons are ignored.
       return;
     }
 
@@ -730,9 +723,8 @@ class Game{
 
   pointerUp(id){
     const stick=this.sticks.get(id);
-    if(stick&&this.players[0]){
-      if(stick.type==="move")this.players[0].moveStick={x:0,y:0};
-      if(stick.type==="aim")this.players[0].touchFire=false;
+    if(stick&&stick.type==="move"&&this.players[0]){
+      this.players[0].moveStick={x:0,y:0};
     }
     this.sticks.delete(id);
     if(id==="mouse")this.mouseDown=false;
@@ -758,8 +750,10 @@ class Game{
 
     if(k==="c")player.strongShot(this);
     if(k==="v")player.rocket(this);
-    for(const [skill,data] of Object.entries(SKILLS))
+
+    for(const [skill,data] of Object.entries(SKILLS)){
       if(k===data.key.toLowerCase())player.useSkill(skill,this);
+    }
   }
 
   update(dt){
@@ -826,17 +820,13 @@ class Game{
       this.spawnTimer+=dt;
       const cfg=DIFFICULTIES[this.diff];
 
-      // Spawn enemies on a timer, up to a reasonable number alive at once.
       if(this.spawnTimer>=cfg.spawnEvery&&this.enemies.length<12){
         this.spawnTimer=0;
         const types=["yellow","purple","green"];
         this.spawnEnemy(types[Math.floor(Math.random()*types.length)]);
       }
 
-      // Win by clearing all enemies; future waves stop after victory.
-      if(this.enemies.length===0){
-        this.state="won";
-      }
+      if(this.enemies.length===0)this.state="won";
     }else if(this.players.filter(player=>player.alive).length<=1){
       this.state="won";
     }
@@ -850,16 +840,19 @@ function eventPoint(e){
   const r=canvas.getBoundingClientRect();
   return{x:e.clientX-r.left,y:e.clientY-r.top};
 }
+
 canvas.addEventListener("pointerdown",e=>{
   e.preventDefault();
   const p=eventPoint(e);
   game.pointerDown(e.pointerId,p.x,p.y);
   try{canvas.setPointerCapture(e.pointerId);}catch(_){}
 },{passive:false});
+
 canvas.addEventListener("pointermove",e=>{
   const p=eventPoint(e);
   game.pointerMove(e.pointerId,p.x,p.y);
 });
+
 canvas.addEventListener("pointerup",e=>game.pointerUp(e.pointerId));
 canvas.addEventListener("pointercancel",e=>game.pointerUp(e.pointerId));
 
