@@ -4,28 +4,59 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Triangle Battle Arena</title>
+
 <style>
+/* =========================
+   PART 1 — PAGE AND CANVAS
+   ========================= */
 *{box-sizing:border-box}
-html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#0b0c10;color:#fff;font-family:Arial,sans-serif;touch-action:none;user-select:none}
-canvas{display:block;width:100%;height:100%;touch-action:none}
+html,body{
+  margin:0;
+  width:100%;
+  height:100%;
+  overflow:hidden;
+  background:#0b0c10;
+  color:#fff;
+  font-family:Arial,sans-serif;
+  touch-action:none;
+  user-select:none;
+}
+canvas{
+  display:block;
+  width:100%;
+  height:100%;
+  touch-action:none;
+}
 </style>
 </head>
+
 <body>
 <canvas id="game"></canvas>
+
 <script>
 "use strict";
 
+/* =========================
+   PART 2 — CANVAS AND SETTINGS
+   Change difficulty counts, spawn times, and skill prices here.
+   ========================= */
 const canvas=document.querySelector("#game");
 const ctx=canvas.getContext("2d");
-let W=innerWidth,H=innerHeight,DPR=1,game;
+
+let W=innerWidth;
+let H=innerHeight;
+let DPR=devicePixelRatio||1;
+let game;
 
 const SPEED=1.7;
+
 const DIFFICULTIES={
   NEWS:{yellow:0,purple:3,green:2,spawnEvery:8},
   BATTLERS:{yellow:0,purple:5,green:3,spawnEvery:6},
   MASTER:{yellow:2,purple:0,green:4,spawnEvery:4.5},
   HELL:{yellow:1,purple:0,green:0,spawnEvery:3.5}
 };
+
 const SKILLS={
   shield:{name:"SHIELD",cost:300,key:"Q",color:"#58a6ff"},
   strike:{name:"STRIKE",cost:500,key:"E",color:"#ff4d6d"},
@@ -34,73 +65,103 @@ const SKILLS={
   help:{name:"HELPER",cost:600,key:"Y",color:"#06d6a0"}
 };
 
-const clamp=(n,a,b)=>Math.max(a,Math.min(b,n));
+/* =========================
+   PART 3 — SHARED DRAWING AND MATH HELPERS
+   ========================= */
+const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
 const distance=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
 const angleTo=(a,b)=>Math.atan2(b.y-a.y,b.x-a.x);
 
 function resize(){
-  W=innerWidth;H=innerHeight;DPR=devicePixelRatio||1;
+  W=innerWidth;
+  H=innerHeight;
+  DPR=devicePixelRatio||1;
+
   canvas.width=Math.round(W*DPR);
   canvas.height=Math.round(H*DPR);
   ctx.setTransform(DPR,0,0,DPR,0,0);
+
   if(game)game.layout();
 }
 addEventListener("resize",resize);
 
-function drawText(s,x,y,size=15,color="#fff",align="center",weight="normal"){
+function drawText(text,x,y,size=15,color="#fff",align="center",weight="normal"){
   ctx.fillStyle=color;
   ctx.font=`${weight} ${size}px Arial`;
   ctx.textAlign=align;
   ctx.textBaseline="middle";
-  ctx.fillText(s,x,y);
+  ctx.fillText(text,x,y);
 }
-function drawButton(r,s,color="#00fff5",small=false){
+
+function drawButton(rect,text,color="#00fff5",small=false){
   ctx.fillStyle="#171827";
-  ctx.fillRect(r.x,r.y,r.w,r.h);
+  ctx.fillRect(rect.x,rect.y,rect.w,rect.h);
+
   ctx.strokeStyle=color;
   ctx.lineWidth=2;
-  ctx.strokeRect(r.x,r.y,r.w,r.h);
-  drawText(s,r.x+r.w/2,r.y+r.h/2,small?12:14,"#fff","center","bold");
+  ctx.strokeRect(rect.x,rect.y,rect.w,rect.h);
+
+  drawText(text,rect.x+rect.w/2,rect.y+rect.h/2,small?12:14,"#fff","center","bold");
 }
+
+/* The triangle tip points in angle "a". */
 function drawTriangle(x,y,r,a,color){
   ctx.save();
   ctx.translate(x,y);
   ctx.rotate(a);
+
   ctx.beginPath();
   ctx.moveTo(r,0);
   ctx.lineTo(-r*.72,r*.68);
   ctx.lineTo(-r*.72,-r*.68);
   ctx.closePath();
+
   ctx.fillStyle=color;
   ctx.fill();
   ctx.restore();
 }
-function drawHealth(x,y,hp,max,color){
+
+function drawHealth(x,y,hp,maxHp,color){
   ctx.fillStyle="#373743";
   ctx.fillRect(x-21,y-32,42,5);
+
   ctx.fillStyle=color;
-  ctx.fillRect(x-21,y-32,42*clamp(hp/max,0,1),5);
-}
-function closest(origin,items){
-  let result=null,best=Infinity;
-  for(const item of items){
-    if(!item.alive)continue;
-    const d=distance(origin,item);
-    if(d<best){best=d;result=item;}
-  }
-  return result;
+  ctx.fillRect(x-21,y-32,42*clamp(hp/maxHp,0,1),5);
 }
 
+function closest(origin,items){
+  let nearest=null;
+  let bestDistance=Infinity;
+
+  for(const item of items){
+    if(!item.alive)continue;
+
+    const d=distance(origin,item);
+    if(d<bestDistance){
+      bestDistance=d;
+      nearest=item;
+    }
+  }
+  return nearest;
+}
+
+/* =========================
+   PART 4 — PROJECTILES
+   ========================= */
 class Bullet{
-  constructor(owner,x,y,a,speed=12,damage=1,color="#00fff5",piercing=false){
-    Object.assign(this,{owner,x,y,a,damage,color,piercing,life:2,r:5});
+  constructor(owner,x,y,angle,speed=12,damage=1,color="#00fff5",piercing=false){
+    Object.assign(this,{
+      owner,x,y,a:angle,damage,color,piercing,life:2,r:5
+    });
     this.speed=speed*SPEED;
   }
+
   update(dt){
     this.x+=Math.cos(this.a)*this.speed;
     this.y+=Math.sin(this.a)*this.speed;
     this.life-=dt;
   }
+
   draw(){
     ctx.fillStyle=this.color;
     ctx.beginPath();
@@ -108,43 +169,75 @@ class Bullet{
     ctx.fill();
   }
 }
+
 class Rocket{
   constructor(owner,target){
-    Object.assign(this,{owner,target,x:owner.x,y:owner.y,r:8,life:3,speed:7*SPEED});
+    Object.assign(this,{
+      owner,target,
+      x:owner.x,y:owner.y,
+      r:8,life:3,speed:7*SPEED
+    });
     this.a=target?angleTo(owner,target):owner.a;
   }
+
   update(dt){
     this.life-=dt;
+
     if(this.target?.alive){
       const targetAngle=angleTo(this,this.target);
-      const delta=Math.atan2(Math.sin(targetAngle-this.a),Math.cos(targetAngle-this.a));
-      this.a+=clamp(delta,-.07,.07);
+      const difference=Math.atan2(
+        Math.sin(targetAngle-this.a),
+        Math.cos(targetAngle-this.a)
+      );
+      this.a+=clamp(difference,-.07,.07);
     }
+
     this.x+=Math.cos(this.a)*this.speed;
     this.y+=Math.sin(this.a)*this.speed;
   }
-  draw(){drawTriangle(this.x,this.y,10,this.a,"#7196ff");}
+
+  draw(){
+    drawTriangle(this.x,this.y,10,this.a,"#7196ff");
+  }
 }
 
+/* =========================
+   PART 5 — PLAYER
+   Left joystick: movement.
+   Right joystick: aim only.
+   ========================= */
 class Player{
   constructor(id,x,y,color,controls){
     Object.assign(this,{
-      id,x,y,color,controls,a:0,hp:60,maxHp:60,alive:true,marks:0,r:18,
+      id,x,y,color,controls,
+      a:0,hp:60,maxHp:60,alive:true,marks:0,r:18,
       skills:[],cooldowns:{},shield:0,dash:0,lastShot:0,
-      strongReady:0,rocketReady:0,moveStick:{x:0,y:0},touchAim:null
+      strongReady:0,rocketReady:0,
+      moveStick:{x:0,y:0},
+      touchAim:null
     });
   }
+
   damage(amount){
     if(!this.alive)return;
-    const blocked=Math.min(this.shield,amount);
-    this.shield-=blocked;
-    this.hp-=amount-blocked;
-    if(this.hp<=0){this.hp=0;this.alive=false;}
+
+    const absorbed=Math.min(this.shield,amount);
+    this.shield-=absorbed;
+    this.hp-=amount-absorbed;
+
+    if(this.hp<=0){
+      this.hp=0;
+      this.alive=false;
+    }
   }
+
   update(dt,g){
     if(!this.alive)return;
-    let dx=this.moveStick.x,dy=this.moveStick.y;
 
+    let dx=this.moveStick.x;
+    let dy=this.moveStick.y;
+
+    // Computer movement uses keyboard.
     if(g.controlMode==="computer"){
       if(g.keys[this.controls.up])dy--;
       if(g.keys[this.controls.down])dy++;
@@ -152,112 +245,194 @@ class Player{
       if(g.keys[this.controls.right])dx++;
     }
 
-    const length=Math.hypot(dx,dy);
-    if(length){
-      dx/=length;dy/=length;
+    const movementLength=Math.hypot(dx,dy);
+    if(movementLength>0){
+      dx/=movementLength;
+      dy/=movementLength;
+
       const speed=5.5*SPEED*(this.dash>0?2.5:1);
       this.x=clamp(this.x+dx*speed,this.r,W-this.r);
       this.y=clamp(this.y+dy*speed,this.r,H-this.r);
     }
+
     this.dash=Math.max(0,this.dash-dt);
 
-    if(this.touchAim!==null)this.a=this.touchAim;
-    else if(g.controlMode==="computer"&&g.mouseAim&&g.activePlayer===this)
+    // Aim controls the visible triangle direction.
+    if(this.touchAim!==null){
+      this.a=this.touchAim;
+    }else if(
+      g.controlMode==="computer"&&
+      g.mouseAim&&
+      g.activePlayer===this
+    ){
       this.a=angleTo(this,g.mouseAim);
+    }
 
+    // Computer mode fires with the fire key or mouse.
     const firing=g.controlMode==="computer"&&(
-      g.keys[this.controls.fire]||(g.mouseDown&&g.activePlayer===this)
+      g.keys[this.controls.fire]||
+      (g.mouseDown&&g.activePlayer===this)
     );
+
     if(firing&&g.time-this.lastShot>.11){
       this.lastShot=g.time;
-      g.bullets.push(new Bullet(this,this.x,this.y,this.a,12,1,this.color));
+      g.bullets.push(
+        new Bullet(this,this.x,this.y,this.a,12,1,this.color)
+      );
     }
   }
+
+  strongShot(g){
+    if(g.time<this.strongReady)return;
+
+    this.strongReady=g.time+8;
+    g.bullets.push(
+      new Bullet(this,this.x,this.y,this.a,17,10,"#ff2e63",true)
+    );
+  }
+
+  rocket(g){
+    if(g.time<this.rocketReady)return;
+
+    const target=closest(this,g.targetsFor(this));
+    if(!target){
+      g.notify("No target for rocket");
+      return;
+    }
+
+    this.rocketReady=g.time+5;
+    g.rockets.push(new Rocket(this,target));
+  }
+
   lockOn(g){
     if(!this.alive||(this.cooldowns.lockon||0)>g.time)return;
+
     const target=closest(this,g.targetsFor(this));
-    if(!target){g.notify("No target for Lock-on");return;}
+    if(!target){
+      g.notify("No target for Lock-on");
+      return;
+    }
+
     this.a=angleTo(this,target);
-    g.bullets.push(new Bullet(this,this.x,this.y,this.a,15,4,"#f9c74f",true));
+    g.bullets.push(
+      new Bullet(this,this.x,this.y,this.a,15,4,"#f9c74f",true)
+    );
     this.cooldowns.lockon=g.time+1;
     g.notify("Lock-on fired");
   }
+
   useSkill(key,g){
-    if(key==="lockon"){this.lockOn(g);return;}
-    if(!this.alive||!this.skills.includes(key)||(this.cooldowns[key]||0)>g.time)return;
+    if(key==="lockon"){
+      this.lockOn(g);
+      return;
+    }
+
+    if(!this.alive||!this.skills.includes(key))return;
+    if((this.cooldowns[key]||0)>g.time)return;
 
     if(key==="shield"){
       this.shield=Math.min(20,this.shield+10);
       this.cooldowns[key]=g.time+20;
       g.notify("Shield activated");
+
     }else if(key==="strike"){
       const target=closest(this,g.targetsFor(this));
       this.cooldowns[key]=g.time+12;
+
       if(target&&distance(this,target)<230){
         g.damageTarget(target,8,this);
         g.notify("Strike hit");
-      }else g.notify("No target nearby");
+      }else{
+        g.notify("No target nearby");
+      }
+
     }else if(key==="fake"){
       this.dash=.28;
       this.cooldowns[key]=g.time+8;
       g.notify("Dash activated");
+
     }else if(key==="help"){
-      g.helpers.push({owner:this,x:this.x,y:this.y,a:this.a,life:12,lastShot:0});
+      g.helpers.push({
+        owner:this,x:this.x,y:this.y,a:this.a,life:12,lastShot:0
+      });
       this.cooldowns[key]=g.time+25;
       g.notify("Helper summoned");
     }
   }
-  strongShot(g){
-    if(g.time<this.strongReady)return;
-    this.strongReady=g.time+8;
-    g.bullets.push(new Bullet(this,this.x,this.y,this.a,17,10,"#ff2e63",true));
-  }
-  rocket(g){
-    if(g.time<this.rocketReady)return;
-    const target=closest(this,g.targetsFor(this));
-    if(!target){g.notify("No target for rocket");return;}
-    this.rocketReady=g.time+5;
-    g.rockets.push(new Rocket(this,target));
-  }
 }
 
+/* =========================
+   PART 6 — ENEMIES
+   Yellow: chase and shoot.
+   Purple: shoot from a distance.
+   Green: charge across the arena.
+   ========================= */
 class Enemy{
   constructor(type,x,y,ownerId=null){
     Object.assign(this,{
-      type,x,y,ownerId,alive:true,a:0,lastShot:0,r:18,
+      type,x,y,ownerId,
+      alive:true,a:0,lastShot:0,r:18,
       state:"waiting",chargeAt:0,chargeAngle:0
     });
+
     this.hp=this.maxHp=type==="yellow"?35:type==="purple"?6:4;
     if(type==="yellow")this.r=22;
     if(type==="purple")this.r=21;
   }
+
+  damage(amount){
+    if(!this.alive)return;
+    this.hp-=amount;
+    if(this.hp<=0){
+      this.hp=0;
+      this.alive=false;
+    }
+  }
+
   update(dt,g){
     if(!this.alive)return;
-    const target=closest(this,g.players.filter(p=>p.alive&&p.id!==this.ownerId));
+
+    const target=closest(
+      this,
+      g.players.filter(player=>player.alive&&player.id!==this.ownerId)
+    );
     if(!target)return;
+
     this.a=angleTo(this,target);
 
+    // Yellow enemies chase the player and shoot when in range.
     if(this.type==="yellow"){
       const d=distance(this,target);
+
       if(d>35){
         this.x+=Math.cos(this.a)*100*SPEED*dt;
         this.y+=Math.sin(this.a)*100*SPEED*dt;
       }
+
       if(d<460&&g.time-this.lastShot>1.05){
         this.lastShot=g.time;
-        g.bullets.push(new Bullet(this,this.x,this.y,this.a,8,2,"#ffe66d"));
+        g.bullets.push(
+          new Bullet(this,this.x,this.y,this.a,8,2,"#ffe66d")
+        );
       }
+
       this.x=clamp(this.x,this.r,W-this.r);
       this.y=clamp(this.y,this.r,H-this.r);
       return;
     }
 
+    // Green enemies charge through the arena.
     if(this.type==="green"){
       if(!this.chargeAt)this.chargeAt=g.time+2;
+
       if(this.state==="charging"){
         this.x+=Math.cos(this.chargeAngle)*720*dt;
         this.y+=Math.sin(this.chargeAngle)*720*dt;
-        if(this.x<-this.r||this.x>W+this.r||this.y<-this.r||this.y>H+this.r){
+
+        if(
+          this.x<-this.r||this.x>W+this.r||
+          this.y<-this.r||this.y>H+this.r
+        ){
           this.state="waiting";
           this.chargeAt=g.time+1.4;
         }
@@ -268,7 +443,10 @@ class Enemy{
       return;
     }
 
-    const d=distance(this,target),speed=1.7*SPEED;
+    // Purple enemies keep distance and shoot.
+    const d=distance(this,target);
+    const speed=1.7*SPEED;
+
     if(d>260){
       this.x+=Math.cos(this.a)*speed;
       this.y+=Math.sin(this.a)*speed;
@@ -277,69 +455,98 @@ class Enemy{
       this.x-=Math.cos(this.a)*speed*.65;
       this.y-=Math.sin(this.a)*speed*.65;
     }
+
     if(g.time-this.lastShot>1.05){
       this.lastShot=g.time;
-      g.bullets.push(new Bullet(this,this.x,this.y,this.a,8,2,"#c77dff"));
+      g.bullets.push(
+        new Bullet(this,this.x,this.y,this.a,8,2,"#c77dff")
+      );
     }
+
     this.x=clamp(this.x,this.r,W-this.r);
     this.y=clamp(this.y,this.r,H-this.r);
   }
+
   draw(){
     if(this.type==="green"&&this.state!=="charging"){
       ctx.strokeStyle="rgba(6,214,160,.4)";
       ctx.lineWidth=3;
       ctx.beginPath();
       ctx.moveTo(this.x,this.y);
-      ctx.lineTo(this.x+Math.cos(this.a)*130,this.y+Math.sin(this.a)*130);
+      ctx.lineTo(
+        this.x+Math.cos(this.a)*130,
+        this.y+Math.sin(this.a)*130
+      );
       ctx.stroke();
     }
+
     const color=this.type==="yellow"?"#f9d56e":
       this.type==="purple"?"#c77dff":"#06d6a0";
+
     drawTriangle(this.x,this.y,this.r,this.a,color);
     drawHealth(this.x,this.y,this.hp,this.maxHp,color);
   }
 }
 
+/* =========================
+   PART 7 — GAME SETUP, MENUS, AND TOUCH CONTROLS
+   ========================= */
 class Game{
   constructor(){
     this.state="controlChoice";
     this.controlMode=null;
     this.mode=null;
     this.diff="NEWS";
+
     this.players=[];
     this.enemies=[];
     this.bullets=[];
     this.rockets=[];
     this.helpers=[];
+
     this.keys={};
     this.time=0;
     this.last=performance.now()/1000;
     this.mouseDown=false;
     this.mouseAim=null;
     this.activePlayer=null;
+
     this.sticks=new Map();
     this.notice="";
     this.noticeUntil=0;
+
     this.buttons=[];
     this.shopButtons=[];
     this.abilityButtons=[];
     this.spawnTimer=0;
+
     this.layout();
   }
 
   layout(){
     this.menu={
       x:Math.max(16,(W-Math.min(W-32,340))/2),
-      y:H*.34,w:Math.min(W-32,340),h:48,g:10
+      y:H*.34,
+      w:Math.min(W-32,340),
+      h:48,
+      g:10
     };
+
     const radius=Math.min(105,Math.max(72,W*.20));
-    // Left = movement. Right = aim.
+
+    // Current joystick mapping:
+    // LEFT circle = movement.
+    // RIGHT circle = aim.
     this.leftCircle={x:radius+18,y:H-radius-20,r:radius};
     this.rightCircle={x:W-radius-18,y:H-radius-20,r:radius};
+
     this.shopRect={x:W-112,y:10,w:102,h:38};
   }
 
-  notify(message){this.notice=message;this.noticeUntil=this.time+2}
+  notify(message){
+    this.notice=message;
+    this.noticeUntil=this.time+2;
+  }
 
   spawnEnemy(type,ownerId=null){
     const x=Math.random()<.5?24:W-24;
@@ -351,6 +558,7 @@ class Game{
     this.mode=mode;
     this.diff=difficulty;
     this.state="playing";
+
     this.players=[];
     this.enemies=[];
     this.bullets=[];
@@ -365,37 +573,50 @@ class Game{
 
     if(mode==="PvP"){
       this.players.push(new Player(2,W*.75,H*.5,"#00b4d8",{
-        up:"arrowup",down:"arrowdown",left:"arrowleft",right:"arrowright",fire:"enter"
+        up:"arrowup",down:"arrowdown",left:"arrowleft",
+        right:"arrowright",fire:"enter"
       }));
     }else{
-      const cfg=DIFFICULTIES[difficulty];
-      for(let i=0;i<cfg.yellow;i++)this.spawnEnemy("yellow");
-      for(let i=0;i<cfg.purple;i++)this.spawnEnemy("purple");
-      for(let i=0;i<cfg.green;i++)this.spawnEnemy("green");
+      const config=DIFFICULTIES[difficulty];
+      for(let i=0;i<config.yellow;i++)this.spawnEnemy("yellow");
+      for(let i=0;i<config.purple;i++)this.spawnEnemy("purple");
+      for(let i=0;i<config.green;i++)this.spawnEnemy("green");
     }
+
     this.activePlayer=this.players[0];
   }
 
   targetsFor(player){
-    if(this.mode==="PvP")return this.players.filter(p=>p!==player&&p.alive);
-    return this.enemies.filter(e=>e.alive&&e.ownerId!==player.id);
+    if(this.mode==="PvP"){
+      return this.players.filter(other=>other!==player&&other.alive);
+    }
+    return this.enemies.filter(enemy=>enemy.alive&&enemy.ownerId!==player.id);
   }
 
   damageTarget(target,amount,player){
     if(!target.alive)return;
+
     const wasAlive=target.alive;
     target.damage(amount);
-    if(wasAlive&&!target.alive&&target instanceof Enemy&&player instanceof Player)
+
+    if(wasAlive&&!target.alive&&target instanceof Enemy&&player instanceof Player){
       player.marks+=200;
+    }
   }
 
   drawMenu(title,items){
     drawText(title,W/2,H*.2,27,"#00fff5","center","bold");
     this.buttons=[];
-    items.forEach((item,i)=>{
-      const r={x:this.menu.x,y:this.menu.y+i*(this.menu.h+this.menu.g),w:this.menu.w,h:this.menu.h};
-      drawButton(r,item.label);
-      this.buttons.push({...r,run:item.run});
+
+    items.forEach((item,index)=>{
+      const rect={
+        x:this.menu.x,
+        y:this.menu.y+index*(this.menu.h+this.menu.g),
+        w:this.menu.w,
+        h:this.menu.h
+      };
+      drawButton(rect,item.label);
+      this.buttons.push({...rect,run:item.run});
     });
   }
 
@@ -405,35 +626,59 @@ class Game{
 
     if(this.state==="controlChoice"){
       this.drawMenu("CHOOSE CONTROL MODE",[
-        {label:"Computer Mode",run:()=>{this.controlMode="computer";this.state="mode";}},
-        {label:"Touchscreen Mode",run:()=>{this.controlMode="touch";this.state="mode";}}
+        {label:"Computer Mode",run:()=>{
+          this.controlMode="computer";
+          this.state="mode";
+        }},
+        {label:"Touchscreen Mode",run:()=>{
+          this.controlMode="touch";
+          this.state="mode";
+        }}
       ]);
       drawText("Choose how you want to play",W/2,H*.28,15,"#bbb");
       return;
     }
+
     if(this.state==="mode"){
       this.drawMenu("SELECT MODE",[
-        {label:"Single Player",run:()=>{this.mode="Single Player";this.state="difficulty";}},
-        {label:"Co-op",run:()=>{this.mode="Co-op";this.state="difficulty";}},
-        {label:"PvP",run:()=>{this.mode="PvP";this.state="difficulty";}}
+        {label:"Single Player",run:()=>{
+          this.mode="Single Player";
+          this.state="difficulty";
+        }},
+        {label:"Co-op",run:()=>{
+          this.mode="Co-op";
+          this.state="difficulty";
+        }},
+        {label:"PvP",run:()=>{
+          this.mode="PvP";
+          this.state="difficulty";
+        }}
       ]);
       return;
     }
+
     if(this.state==="difficulty"){
-      const items=Object.keys(DIFFICULTIES).map(d=>({label:d,run:()=>this.start(this.mode,d)}));
+      const items=Object.keys(DIFFICULTIES).map(difficulty=>({
+        label:difficulty,
+        run:()=>this.start(this.mode,difficulty)
+      }));
       items.push({label:"Back",run:()=>{this.state="mode";}});
       this.drawMenu("SELECT DIFFICULTY",items);
       return;
     }
+
     if(this.state==="shop"){
       this.drawGame();
       this.drawShop();
       return;
     }
+
     if(this.state==="dead"||this.state==="won"){
       this.drawGame();
+
       ctx.fillStyle="rgba(0,0,0,.82)";
       ctx.fillRect(0,0,W,H);
+
       if(this.state==="won"){
         drawText("YOU WIN!",W/2,H*.42,38,"#ffe66d","center","bold");
         drawText("All enemies defeated!",W/2,H*.51,20);
@@ -442,17 +687,541 @@ class Game{
         drawText("GAME OVER",W/2,H*.42,36,"#ff2e63","center","bold");
         drawText(winner?`PLAYER ${winner.id} WINS`:"You were defeated",W/2,H*.51,20);
       }
-      drawText("Tap or press a key to return to mode selection",W/2,H*.60,14,"#ddd");
+
+      drawText(
+        "Tap or press a key to return to mode selection",
+        W/2,H*.60,14,"#ddd"
+      );
       return;
     }
+
     if(this.state==="playing")this.drawGame();
   }
 
+  /* =========================
+     PART 8 — GAME AND BUTTON DRAWING
+     Change the Strong Shot symbol in drawAbilityButtons().
+     ========================= */
   drawGame(){
-    for(const e of this.enemies)e.draw();
-    for(const b of this.bullets)b.draw();
-    for(const r of this.rockets)r.draw();
-    for(const h of this.helpers)drawTriangle(h.x,h.y,12,h.a,"#06d6a0");
+    for(const enemy of this.enemies)enemy.draw();
+    for(const bullet of this.bullets)bullet.draw();
+    for(const rocket of this.rockets)rocket.draw();
 
-    for(const p of this.players){
-     
+    for(const helper of this.helpers){
+      drawTriangle(helper.x,helper.y,12,helper.a,"#06d6a0");
+    }
+
+    for(const player of this.players){
+      if(!player.alive)continue;
+
+      // Player triangle direction is the current aim direction.
+      drawTriangle(player.x,player.y,player.r,player.a,player.color);
+      drawHealth(player.x,player.y,player.hp,player.maxHp,player.color);
+
+      if(player.shield>0){
+        ctx.strokeStyle="#58a6ff";
+        ctx.lineWidth=3;
+        ctx.beginPath();
+        ctx.arc(player.x,player.y,player.r+7,0,Math.PI*2);
+        ctx.stroke();
+      }
+
+      drawText(
+        `P${player.id}  ${player.hp} HP  ${player.marks} marks`,
+        player.id===1?10:W-10,22,14,player.color,
+        player.id===1?"left":"right","bold"
+      );
+    }
+
+    drawButton(this.shopRect,"SHOP","#ff2e63");
+
+    if(this.controlMode==="computer"){
+      drawText(
+        "WASD move • Mouse aim/shoot • C strong • V rocket",
+        W/2,20,12,"#ddd"
+      );
+    }else{
+      this.drawTouchControls();
+    }
+
+    if(this.mode==="PvP"){
+      drawText(
+        "P1: WASD + F • P2: Arrow keys + Enter",
+        W/2,42,12,"#ddd"
+      );
+    }
+
+    this.drawAbilityButtons(this.players[0]);
+
+    if(this.notice&&this.time<this.noticeUntil){
+      drawText(this.notice,W/2,65,14,"#ffe66d");
+    }
+  }
+
+  drawTouchControls(){
+    // Left = movement, right = aim.
+    this.drawStick(this.leftCircle,"#00fff5","MOVE","move");
+    this.drawStick(this.rightCircle,"#ff2e63","AIM","aim");
+  }
+
+  drawStick(circle,color,title,type){
+    ctx.strokeStyle=color;
+    ctx.lineWidth=3;
+    ctx.globalAlpha=.68;
+    ctx.beginPath();
+    ctx.arc(circle.x,circle.y,circle.r,0,Math.PI*2);
+    ctx.stroke();
+    ctx.globalAlpha=1;
+
+    const activeStick=[...this.sticks.values()].find(stick=>stick.type===type);
+    const knobX=activeStick?activeStick.x:circle.x;
+    const knobY=activeStick?activeStick.y:circle.y;
+
+    ctx.fillStyle=color;
+    ctx.globalAlpha=.8;
+    ctx.beginPath();
+    ctx.arc(knobX,knobY,circle.r*.23,0,Math.PI*2);
+    ctx.fill();
+    ctx.globalAlpha=1;
+
+    drawText(title,circle.x,circle.y+circle.r*.62,11);
+  }
+
+  drawAbilityButton(rect,label,color,action){
+    drawButton(rect,label,color,true);
+    this.abilityButtons.push({...rect,run:action});
+  }
+
+  drawAbilityButtons(player){
+    this.abilityButtons=[];
+    if(!player)return;
+
+    // Lock-on is tappable even when the touch is outside the joystick circles.
+    const lockRect={x:W-62,y:58,w:50,h:50};
+    this.drawAbilityButton(lockRect,"LOCK","#f9c74f",()=>player.lockOn(this));
+
+    let x=W-62;
+    let y=116;
+    const size=48;
+    const gap=7;
+
+    const addButton=(label,color,action,smallLabel)=>{
+      const rect={x,y,w:size,h:size};
+      this.drawAbilityButton(rect,label,color,action);
+      drawText(smallLabel,x+size/2,y-7,10);
+      y+=size+gap;
+    };
+
+    // The star is the Strong Shot button symbol.
+    addButton(
+      "✦","#ff2e63",
+      ()=>player.strongShot(this),
+      player.strongReady>this.time
+        ?Math.ceil(player.strongReady-this.time)+"s"
+        :"STRONG"
+    );
+
+    addButton(
+      "ROCKET","#7196ff",
+      ()=>player.rocket(this),
+      player.rocketReady>this.time
+        ?Math.ceil(player.rocketReady-this.time)+"s"
+        :"V"
+    );
+
+    for(const [key,skill] of Object.entries(SKILLS)){
+      if(key==="lockon"||!player.skills.includes(key))continue;
+
+      const cooldown=Math.max(0,(player.cooldowns[key]||0)-this.time);
+      addButton(
+        skill.name,
+        skill.color,
+        ()=>player.useSkill(key,this),
+        cooldown>0?Math.ceil(cooldown)+"s":skill.key
+      );
+    }
+  }
+
+  drawShop(){
+    ctx.fillStyle="rgba(0,0,0,.9)";
+    ctx.fillRect(0,0,W,H);
+
+    drawText("SHOP",W/2,28,24,"#00fff5","center","bold");
+    drawText(`Marks: ${this.players[0]?.marks||0}`,W/2,53,14);
+
+    const items=[
+      ...Object.entries(SKILLS).map(([key,skill])=>({
+        label:`Buy ${skill.name} — ${skill.cost} marks`,
+        run:()=>{
+          const player=this.players[0];
+
+          if(player.skills.includes(key)){
+            this.notify("Already owned");
+            return;
+          }
+          if(player.marks<skill.cost){
+            this.notify("Not enough marks");
+            return;
+          }
+
+          player.marks-=skill.cost;
+          player.skills.push(key);
+          this.notify(skill.name+" purchased");
+        }
+      })),
+      {label:"Back to Match",run:()=>{this.state="playing";}}
+    ];
+
+    const width=Math.min(360,W-28);
+    const height=Math.min(44,(H-90)/items.length);
+    const x=(W-width)/2;
+    const y=70;
+
+    this.shopButtons=[];
+    items.forEach((item,index)=>{
+      const rect={x,y:y+index*(height+6),w:width,h:height};
+      drawButton(rect,item.label);
+      this.shopButtons.push({...rect,run:item.run});
+    });
+  }
+
+  /* =========================
+     PART 9 — TOUCH INPUT
+     LEFT circle moves.
+     RIGHT circle aims.
+     Outside circles/buttons: ignored.
+     ========================= */
+  updateStick(id,x,y){
+    const stick=this.sticks.get(id);
+    const player=this.players[0];
+    if(!stick||!player)return;
+
+    const circle=stick.type==="move"?this.leftCircle:this.rightCircle;
+
+    let dx=x-circle.x;
+    let dy=y-circle.y;
+    const length=Math.hypot(dx,dy);
+    const max=circle.r*.65;
+
+    if(length>max){
+      dx=dx/length*max;
+      dy=dy/length*max;
+    }
+
+    stick.x=circle.x+dx;
+    stick.y=circle.y+dy;
+
+    if(stick.type==="move"){
+      // Left joystick changes position only.
+      if(length>5){
+        const strength=Math.min(1,length/max);
+        player.moveStick={
+          x:dx/length*strength,
+          y:dy/length*strength
+        };
+      }else{
+        player.moveStick={x:0,y:0};
+      }
+    }else{
+      // Right joystick changes aim only. Triangle and bullets use this angle.
+      if(length>5){
+        player.touchAim=Math.atan2(dy,dx);
+      }
+    }
+  }
+
+  pointerDown(id,x,y){
+    if(this.state==="dead"||this.state==="won"){
+      this.state="mode";
+      return;
+    }
+
+    if(["controlChoice","mode","difficulty"].includes(this.state)){
+      const button=this.buttons.find(b=>
+        x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h
+      );
+      if(button)button.run();
+      return;
+    }
+
+    if(this.state==="shop"){
+      const button=this.shopButtons.find(b=>
+        x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h
+      );
+      if(button)button.run();
+      return;
+    }
+
+    if(this.state!=="playing")return;
+
+    if(
+      x>=this.shopRect.x&&x<=this.shopRect.x+this.shopRect.w&&
+      y>=this.shopRect.y&&y<=this.shopRect.y+this.shopRect.h
+    ){
+      this.state="shop";
+      return;
+    }
+
+    const ability=this.abilityButtons.find(b=>
+      x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h
+    );
+    if(ability){
+      ability.run();
+      return;
+    }
+
+    if(this.controlMode==="touch"){
+      // Left circle controls movement only.
+      if(distance({x,y},this.leftCircle)<=this.leftCircle.r){
+        this.sticks.set(id,{
+          type:"move",
+          x:this.leftCircle.x,
+          y:this.leftCircle.y
+        });
+        this.updateStick(id,x,y);
+        return;
+      }
+
+      // Right circle controls aiming only.
+      if(distance({x,y},this.rightCircle)<=this.rightCircle.r){
+        this.sticks.set(id,{
+          type:"aim",
+          x:this.rightCircle.x,
+          y:this.rightCircle.y
+        });
+        this.updateStick(id,x,y);
+        return;
+      }
+
+      // Ignore touch input everywhere else.
+      return;
+    }
+
+    // Computer mouse aim and shooting.
+    this.mouseDown=true;
+    this.mouseAim={x,y};
+    this.activePlayer=this.mode==="PvP"&&x>W/2
+      ?this.players[1]
+      :this.players[0];
+  }
+
+  pointerMove(id,x,y){
+    if(this.controlMode==="computer"){
+      this.mouseAim={x,y};
+      return;
+    }
+
+    if(this.sticks.has(id)){
+      this.updateStick(id,x,y);
+    }
+  }
+
+  pointerUp(id){
+    const stick=this.sticks.get(id);
+
+    if(stick&&stick.type==="move"&&this.players[0]){
+      this.players[0].moveStick={x:0,y:0};
+    }
+
+    this.sticks.delete(id);
+
+    if(id==="mouse"){
+      this.mouseDown=false;
+    }
+  }
+
+  /* =========================
+     PART 10 — KEYBOARD INPUT
+     ========================= */
+  key(key,down){
+    const k=key.toLowerCase();
+    this.keys[k]=down;
+
+    if(!down)return;
+
+    if(this.state==="dead"||this.state==="won"){
+      this.state="mode";
+      return;
+    }
+
+    if(this.state!=="playing")return;
+    if(k==="escape"){
+      this.state="shop";
+      return;
+    }
+
+    let player=this.players[0];
+
+    if(
+      this.mode==="PvP"&&
+      ["arrowup","arrowdown","arrowleft","arrowright","enter"].includes(k)
+    ){
+      player=this.players[1];
+    }
+
+    if(k==="c")player.strongShot(this);
+    if(k==="v")player.rocket(this);
+
+    for(const [skill,data] of Object.entries(SKILLS)){
+      if(k===data.key.toLowerCase())player.useSkill(skill,this);
+    }
+  }
+
+  /* =========================
+     PART 11 — GAME UPDATE AND WIN/LOSS
+     ========================= */
+  update(dt){
+    this.time+=dt;
+    if(this.state!=="playing")return;
+
+    for(const player of this.players)player.update(dt,this);
+    for(const enemy of this.enemies)enemy.update(dt,this);
+
+    // Helper automatically attacks the nearest target.
+    for(const helper of this.helpers){
+      helper.life-=dt;
+      const target=closest(helper,this.targetsFor(helper.owner));
+
+      if(target){
+        helper.a=angleTo(helper,target);
+
+        if(this.time-helper.lastShot>.5){
+          helper.lastShot=this.time;
+          this.bullets.push(
+            new Bullet(helper.owner,helper.x,helper.y,helper.a,11,1,"#06d6a0")
+          );
+        }
+      }
+    }
+    this.helpers=this.helpers.filter(helper=>helper.life>0);
+
+    // Update bullets and check collisions.
+    for(const bullet of this.bullets){
+      bullet.update(dt);
+
+      const targets=bullet.owner instanceof Player
+        ?this.targetsFor(bullet.owner)
+        :this.players.filter(player=>player.alive);
+
+      for(const target of targets){
+        if(!target.alive||target===bullet.owner)continue;
+
+        if(distance(bullet,target)<(target.r||18)+bullet.r){
+          this.damageTarget(target,bullet.damage,bullet.owner);
+          if(!bullet.piercing)bullet.life=0;
+          break;
+        }
+      }
+    }
+
+    // Update homing rockets and check collisions.
+    for(const rocket of this.rockets){
+      rocket.update(dt);
+
+      for(const target of this.targetsFor(rocket.owner)){
+        if(target.alive&&distance(rocket,target)<(target.r||18)+rocket.r){
+          this.damageTarget(target,12,rocket.owner);
+          rocket.life=0;
+          break;
+        }
+      }
+    }
+
+    this.bullets=this.bullets.filter(b=>
+      b.life>0&&b.x>-30&&b.y>-30&&b.x<W+30&&b.y<H+30
+    );
+    this.rockets=this.rockets.filter(r=>
+      r.life>0&&r.x>-30&&r.y>-30&&r.x<W+30&&r.y<H+30
+    );
+    this.enemies=this.enemies.filter(enemy=>enemy.alive);
+
+    if(this.players.some(player=>!player.alive)){
+      this.state="dead";
+      return;
+    }
+
+    if(this.mode!=="PvP"){
+      const config=DIFFICULTIES[this.diff];
+      this.spawnTimer+=dt;
+
+      // Keep producing enemies during the match, with a maximum of 12 alive.
+      if(this.spawnTimer>=config.spawnEvery&&this.enemies.length<12){
+        this.spawnTimer=0;
+        const types=["yellow","purple","green"];
+        this.spawnEnemy(types[Math.floor(Math.random()*types.length)]);
+      }
+
+      if(this.enemies.length===0){
+        this.state="won";
+      }
+    }else if(this.players.filter(player=>player.alive).length<=1){
+      this.state="won";
+    }
+  }
+}
+
+/* =========================
+   PART 12 — START GAME AND CONNECT INPUT EVENTS
+   ========================= */
+game=new Game();
+resize();
+
+function getCanvasPoint(event){
+  const rect=canvas.getBoundingClientRect();
+  return{
+    x:event.clientX-rect.left,
+    y:event.clientY-rect.top
+  };
+}
+
+canvas.addEventListener("pointerdown",event=>{
+  event.preventDefault();
+  const point=getCanvasPoint(event);
+  game.pointerDown(event.pointerId,point.x,point.y);
+
+  try{
+    canvas.setPointerCapture(event.pointerId);
+  }catch(_){}
+},{passive:false});
+
+canvas.addEventListener("pointermove",event=>{
+  const point=getCanvasPoint(event);
+  game.pointerMove(event.pointerId,point.x,point.y);
+});
+
+canvas.addEventListener("pointerup",event=>{
+  game.pointerUp(event.pointerId);
+});
+
+canvas.addEventListener("pointercancel",event=>{
+  game.pointerUp(event.pointerId);
+});
+
+addEventListener("keydown",event=>{
+  game.key(event.key,true);
+
+  if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," "].includes(event.key)){
+    event.preventDefault();
+  }
+});
+addEventListener("keyup",event=>{
+  game.key(event.key,false);
+});
+
+/* =========================
+   PART 13 — MAIN ANIMATION LOOP
+   ========================= */
+function frame(){
+  const now=performance.now()/1000;
+  const dt=Math.min(.04,now-game.last);
+  game.last=now;
+
+  game.update(dt);
+  game.draw();
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
